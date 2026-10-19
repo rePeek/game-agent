@@ -25,7 +25,7 @@ target_sources(llm-openai
 target_link_libraries(llm-openai
     PUBLIC
         llm::core
-        llm::tools
+        llm::commands
     PRIVATE
         $<BUILD_INTERFACE:httplib::httplib>
         $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>

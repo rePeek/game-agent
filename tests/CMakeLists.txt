@@ -37,7 +37,7 @@ function(add_llm_test name)
 endfunction()
 
 add_subdirectory(core)
-add_subdirectory(tools)
+add_subdirectory(commands)
 add_subdirectory(context)
 add_subdirectory(agent)
 add_subdirectory(providers/openai)

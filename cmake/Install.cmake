@@ -2,7 +2,7 @@
 #
 # The targets are collected by the modules themselves (LLM_INSTALL_TARGETS) and
 # exported together under the llm:: namespace, so the installed interface is
-# exactly the build tree's: llm::core, llm::tools, llm::context, llm::openai
+# exactly the build tree's: llm::core, llm::commands, llm::context, llm::openai
 # and the llm::sdk umbrella.
 
 include(GNUInstallDirs)

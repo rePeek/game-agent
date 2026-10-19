@@ -3,7 +3,7 @@
 /// Everything the SDK ships, in one header.
 ///
 /// Convenience only: each module's headers can be included on their own, and
-/// llm::core, llm::tools and llm::context pull in no third-party dependency
+/// llm::core, llm::commands and llm::context pull in no third-party dependency
 /// even through this file — the transport interface is standard-library-only
 /// and the HTTP implementation stays inside the provider.
 
@@ -18,8 +18,10 @@
 #include "llm/core/result.h"
 #include "llm/core/types.h"
 
-// Tools: schema and batch validation.
-#include "llm/tools/validation.h"
+// Commands: typed registration, schema generation and batch validation.
+#include "llm/commands/arguments.hpp"
+#include "llm/commands/parameter.hpp"
+#include "llm/commands/validation.h"
 
 // Context: the history the agent projects into a request.
 #include "llm/context/context.h"

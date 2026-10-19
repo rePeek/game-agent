@@ -69,7 +69,7 @@ define_property(GLOBAL PROPERTY LLM_INSTALL_TARGETS
 # Modules
 # ---------------------------------------------------------------------------
 add_subdirectory(src/core)
-add_subdirectory(src/tools)
+add_subdirectory(src/commands)
 add_subdirectory(src/context)
 add_subdirectory(src/providers)
 
@@ -91,7 +91,7 @@ target_include_directories(llm-sdk
 target_link_libraries(llm-sdk
     INTERFACE
         llm::core
-        llm::tools
+        llm::commands
         llm::context
         llm::openai
 )

@@ -2,16 +2,16 @@
 
 # game-agent package configuration.
 #
-# Installed targets (namespace llm::): core, tools, context, openai, sdk.
+# Installed targets (namespace llm::): core, commands, context, openai, sdk.
 # cpp-httplib and nlohmann/json are implementation details of the provider, so a
 # consumer only needs OpenSSL and Threads — and only when it links llm::openai:
-# llm::core, llm::tools and llm::context build and link without TLS.
+# llm::core, llm::commands and llm::context build and link without TLS.
 
 include(CMakeFindDependencyMacro)
 
 set(GAME_AGENT_VERSION "@PROJECT_VERSION@")
 
-set(GAME_AGENT_AVAILABLE_COMPONENTS core tools context openai sdk)
+set(GAME_AGENT_AVAILABLE_COMPONENTS core commands context openai sdk)
 
 set(GAME_AGENT_REQUESTED_COMPONENTS ${game-agent_FIND_COMPONENTS})
 if(NOT GAME_AGENT_REQUESTED_COMPONENTS)
