@@ -147,9 +147,10 @@ struct Agent::Impl {
     return request;
   }
 
-  /// Applies the update and reserves the agent for one decision, or returns a
-  /// refusal (Closed/Busy) without touching anything.
-  Attempt BeginAttempt(ContextUpdate update) {
+  /// Reserves the agent for one decision and snapshots the request, or returns
+  /// a refusal (Closed/Busy) without touching anything. The context is whatever
+  /// UpdateContext() recorded last.
+  Attempt BeginAttempt() {
     Attempt attempt;
     const std::shared_ptr<ILogger> log_sink = logger;
     const std::string agent_id = id;
@@ -169,7 +170,6 @@ struct Agent::Impl {
                         : "a decision is still awaiting tool results; call "
                           "RecordToolResults or DiscardDecision first");
       } else {
-        context.SetContextUpdate(std::move(update));
         attempt.started = true;
         attempt.context_revision = context.context_revision();
         attempt.request_id = next_request_id++;
@@ -332,7 +332,7 @@ Context Agent::ContextSnapshot() const {
   return impl_->context;
 }
 
-std::future<DecisionResult> Agent::DecideAsync(ContextUpdate update) {
+std::future<DecisionResult> Agent::DecideAsync() {
   // A shared promise: the queued task must be copy-constructible, and
   // std::promise is not.
   auto promise = std::make_shared<std::promise<DecisionResult>>();
@@ -344,7 +344,7 @@ std::future<DecisionResult> Agent::DecideAsync(ContextUpdate update) {
     return future;
   }
 
-  const Impl::Attempt attempt = impl_->BeginAttempt(std::move(update));
+  const Impl::Attempt attempt = impl_->BeginAttempt();
   if (!attempt.started) {
     promise->set_value(attempt.refusal);
     return future;

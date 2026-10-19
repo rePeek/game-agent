@@ -99,7 +99,11 @@ class Agent final {
   std::vector<ToolDefinition> tools() const;
 
   // --- context ------------------------------------------------------------
-  /// Adds or updates the world state. See AGENT-3 for the in-flight rule.
+  /// Records the latest world state and recent-history window.
+  ///
+  /// It may be called at any time, including while a decision is in flight: the
+  /// update then applies to the *next* decision, never to the request that was
+  /// already sent (the request is snapshotted when DecideAsync() is called).
   void UpdateContext(ContextUpdate update);
 
   /// Revision of the newest context update this agent received.
@@ -108,11 +112,14 @@ class Agent final {
   Context ContextSnapshot() const;
 
   // --- decisions ----------------------------------------------------------
-  /// Starts one decision: renders the context, asks the provider exactly once
-  /// on the agent's worker, and keeps the result pending until it is confirmed
-  /// or discarded. The returned future is always satisfied — Busy and Closed
-  /// are reported as DecisionStatus, never as a broken promise.
-  std::future<DecisionResult> DecideAsync(ContextUpdate update);
+  /// Starts one decision from the context recorded so far: renders it, asks the
+  /// provider exactly once on the agent's worker, and keeps the result pending
+  /// until it is confirmed or discarded.
+  ///
+  /// Returns Busy when a decision is already in flight or awaiting results, and
+  /// Closed after Close(). The returned future is always satisfied — Busy and
+  /// Closed are reported as DecisionStatus, never as a broken promise.
+  std::future<DecisionResult> DecideAsync();
 
   /// Confirms a pending decision with the results the application executed.
   /// The results must cover every tool call of that decision, exactly once;

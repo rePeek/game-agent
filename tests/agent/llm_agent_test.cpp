@@ -1,8 +1,11 @@
 // Unit tests for llm::Agent: configuration, decisions, staging and isolation.
 // The provider is scripted, so nothing here needs a network.
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,6 +53,43 @@ class ScriptedProvider : public IModelProvider {
   }
 };
 
+/// Blocks inside Complete() until the test releases it, so in-flight behaviour
+/// can be tested without sleeping.
+class GatedProvider : public IModelProvider {
+ public:
+  CompletionResult next = SuccessfulBatch();
+  std::vector<ModelRequest> requests;
+
+  std::string Name() const override { return "gated"; }
+  CompletionResult Complete(const ModelRequest& request) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    requests.push_back(request);
+    ++calls_;
+    entered_cv_.notify_all();
+    release_cv_.wait(lock, [this] { return released_; });
+    return next;
+  }
+
+  bool WaitUntilEntered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return entered_cv_.wait_for(lock, timeout, [this] { return calls_ > 0; });
+  }
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    release_cv_.notify_all();
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable entered_cv_;
+  std::condition_variable release_cv_;
+  int calls_ = 0;
+  bool released_ = false;
+};
+
 ContextUpdate Update(std::string revision, std::string context = "Minute 62.") {
   ContextUpdate update;
   update.current_context = std::move(context);
@@ -64,6 +104,12 @@ ToolResult ResultFor(const std::string& call_id) {
   result.name = "set_pressing_intensity";
   result.content_json = R"({"applied":true})";
   return result;
+}
+
+/// One decision round: update the context, then ask.
+DecisionResult Decide(Agent& agent, ContextUpdate update) {
+  agent.UpdateContext(std::move(update));
+  return agent.DecideAsync().get();
 }
 
 AgentConfig DefaultConfig() {
@@ -81,7 +127,8 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
   Agent agent(provider, DefaultConfig());
   agent.SetTools({PressingTool()});
 
-  std::future<DecisionResult> future = agent.DecideAsync(Update("rev-62"));
+  agent.UpdateContext(Update("rev-62"));
+  std::future<DecisionResult> future = agent.DecideAsync();
   const DecisionResult decision = future.get();
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
@@ -123,7 +170,7 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   Agent agent(provider, DefaultConfig());
   agent.SetTools({PressingTool()});
 
-  const DecisionResult first = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
 
   EXPECT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
@@ -137,7 +184,7 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   EXPECT_EQ(context.decisions()[0].tool_results.size(), 1u);
 
   // The next decision carries the confirmed round.
-  const DecisionResult second = agent.DecideAsync(Update("rev-70")).get();
+  const DecisionResult second = Decide(agent, Update("rev-70"));
   ASSERT_TRUE(second.completion.IsSuccess());
   ASSERT_EQ(provider->requests.size(), 2u);
   const std::vector<Message>& messages = provider->requests[1].messages;
@@ -154,10 +201,10 @@ TEST(LlmAgentTest, OneDecisionAtATime) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
 
-  const DecisionResult first = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
 
-  const DecisionResult busy = agent.DecideAsync(Update("rev-63")).get();
+  const DecisionResult busy = Decide(agent, Update("rev-63"));
   EXPECT_EQ(busy.status, DecisionStatus::Busy);
   EXPECT_EQ(busy.decision_id, 0u);
   EXPECT_EQ(provider->requests.size(), 1u)
@@ -165,7 +212,7 @@ TEST(LlmAgentTest, OneDecisionAtATime) {
 
   EXPECT_TRUE(agent.DiscardDecision(first.decision_id));
   EXPECT_FALSE(agent.IsBusy());
-  const DecisionResult after = agent.DecideAsync(Update("rev-63")).get();
+  const DecisionResult after = Decide(agent, Update("rev-63"));
   EXPECT_EQ(after.status, DecisionStatus::Completed);
   EXPECT_EQ(after.decision_id, 2u);
 }
@@ -173,7 +220,7 @@ TEST(LlmAgentTest, OneDecisionAtATime) {
 TEST(LlmAgentTest, IncompleteResultsRecordNothing) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  const DecisionResult decision = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   EXPECT_EQ(agent.RecordToolResults(decision.decision_id, {}),
@@ -196,7 +243,7 @@ TEST(LlmAgentTest, FailedDecisionsAreNotStaged) {
   provider->next.status = CompletionStatus::NoToolCalls;
   Agent agent(provider, DefaultConfig());
 
-  const DecisionResult decision = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
   EXPECT_EQ(decision.completion.status, CompletionStatus::NoToolCalls);
@@ -214,13 +261,13 @@ TEST(LlmAgentTest, AgentsShareAProviderButNotAContext) {
   away_config.id = "away";
   Agent away(provider, std::move(away_config));
 
-  const DecisionResult home_decision = home.DecideAsync(Update("rev-h")).get();
+  const DecisionResult home_decision = Decide(home, Update("rev-h"));
   ASSERT_TRUE(home_decision.completion.IsSuccess());
   EXPECT_EQ(
       home.RecordToolResults(home_decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
 
-  const DecisionResult away_decision = away.DecideAsync(Update("rev-a")).get();
+  const DecisionResult away_decision = Decide(away, Update("rev-a"));
   ASSERT_TRUE(away_decision.completion.IsSuccess());
 
   EXPECT_EQ(home.ContextSnapshot().decision_count(), 1u);
@@ -246,7 +293,7 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
   EXPECT_EQ(agent.model(), "another-model");
   EXPECT_TRUE(agent.tools().empty());
 
-  const DecisionResult decision = agent.DecideAsync(Update("rev-5")).get();
+  const DecisionResult decision = Decide(agent, Update("rev-5"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   const ModelRequest& request = provider->requests[0];
@@ -258,12 +305,12 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
 TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  const DecisionResult first = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult first = Decide(agent, Update("rev-62"));
 
   agent.Close();
   EXPECT_TRUE(agent.IsClosed());
 
-  const DecisionResult refused = agent.DecideAsync(Update("rev-63")).get();
+  const DecisionResult refused = Decide(agent, Update("rev-63"));
   EXPECT_EQ(refused.status, DecisionStatus::Closed);
   EXPECT_EQ(provider->requests.size(), 1u);
   EXPECT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
@@ -276,10 +323,65 @@ TEST(LlmAgentTest, WaitForIdleReportsWhenTheWorkerIsDone) {
   Agent agent(provider, DefaultConfig());
 
   EXPECT_TRUE(agent.WaitForIdle(std::chrono::milliseconds(0)));
-  const DecisionResult decision = agent.DecideAsync(Update("rev-62")).get();
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
   EXPECT_EQ(agent.InFlightDecisionCount(), 0u);
   EXPECT_TRUE(agent.WaitForIdle(std::chrono::milliseconds(0)));
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
+}
+
+TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
+  auto provider = std::make_shared<GatedProvider>();
+  Agent agent(provider, DefaultConfig());
+  agent.SetTools({PressingTool()});
+
+  agent.UpdateContext(Update("rev-62", "Minute 62."));
+  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+
+  // The game keeps updating the world while the model is thinking. That is
+  // allowed, and it cannot change the request already sent.
+  agent.UpdateContext(Update("rev-70", "Minute 70."));
+  EXPECT_EQ(agent.current_revision(), "rev-70");
+  EXPECT_TRUE(agent.IsBusy());
+
+  provider->Release();
+  const DecisionResult first = future.get();
+  ASSERT_TRUE(first.completion.IsSuccess());
+  EXPECT_EQ(first.context_revision, "rev-62")
+      << "the decision reports the snapshot it was taken from";
+
+  // ... and the next decision sees the newer state.
+  ASSERT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
+            RecordOutcome::Recorded);
+  const DecisionResult second = agent.DecideAsync().get();
+  ASSERT_TRUE(second.completion.IsSuccess());
+  EXPECT_EQ(second.context_revision, "rev-70");
+
+  ASSERT_EQ(provider->requests.size(), 2u);
+  const std::vector<Message>& messages = provider->requests[1].messages;
+  ASSERT_FALSE(messages.empty());
+  EXPECT_NE(messages.back().content.find("Minute 70."), std::string::npos)
+      << "the next request carries the updated context";
+}
+
+TEST(LlmAgentTest, ARefusedDecisionStillUsesTheLatestUpdate) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  Agent agent(provider, DefaultConfig());
+
+  const DecisionResult first = Decide(agent, Update("rev-62", "Minute 62."));
+  ASSERT_TRUE(first.completion.IsSuccess());
+
+  // Refused as Busy: the update is recorded either way, because UpdateContext
+  // is about the world state, not about the request.
+  const DecisionResult busy = Decide(agent, Update("rev-63", "Minute 63."));
+  EXPECT_EQ(busy.status, DecisionStatus::Busy);
+  EXPECT_EQ(agent.current_revision(), "rev-63");
+
+  ASSERT_EQ(agent.DiscardDecision(first.decision_id), true);
+  const DecisionResult after = agent.DecideAsync().get();
+  ASSERT_TRUE(after.completion.IsSuccess());
+  EXPECT_EQ(after.context_revision, "rev-63")
+      << "a refused decision does not swallow the update";
 }
 
 }  // namespace
