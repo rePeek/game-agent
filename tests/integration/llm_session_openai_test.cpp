@@ -8,9 +8,9 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <llm/context.h>
+#include <llm/context/context.h>
+#include <llm/context/session.h>
 #include <llm/openai.h>
-#include <llm/session.h>
 #include <nlohmann/json.hpp>
 
 namespace llm {

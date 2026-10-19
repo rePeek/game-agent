@@ -17,7 +17,7 @@
 /// A Session never executes tools and never decides on its own to continue:
 /// both are the application's call.
 
-#include "context.h"
+#include "llm/context/context.h"
 #include "llm/core/provider.h"
 #include "llm/core/request.h"
 #include "llm/core/result.h"

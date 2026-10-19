@@ -86,8 +86,8 @@ configure_llm_component(llm-context)
 
 target_sources(llm-context
     PRIVATE
-        src/llm/context/context.cpp
-        src/llm/context/session.cpp
+        src/context/context.cpp
+        src/context/session.cpp
 )
 
 target_link_libraries(llm-context

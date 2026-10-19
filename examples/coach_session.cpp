@@ -32,14 +32,14 @@
 #include <utility>
 #include <vector>
 
-#include <llm/context.h>
+#include <llm/context/context.h>
+#include <llm/context/session.h>
 #include <llm/core/message.h>
 #include <llm/core/provider.h>
 #include <llm/core/request.h>
 #include <llm/core/result.h>
 #include <llm/core/types.h>
 #include <llm/openai.h>
-#include <llm/session.h>
 
 namespace {
 

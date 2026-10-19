@@ -5,7 +5,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <llm/context.h>
+#include <llm/context/context.h>
 #include <llm/core/message.h>
 #include <llm/core/provider.h>
 #include <llm/core/request.h>
