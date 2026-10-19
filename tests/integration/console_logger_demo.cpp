@@ -52,14 +52,14 @@ class ScriptedTransport : public llm::ITransport {
   }
 };
 
-llm::CommandDefinition PressingTool() {
-  llm::CommandDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "Raise or lower the pressing intensity";
-  tool.parameters_schema_json =
-      R"({"type":"object","properties":{"level":{"type":"integer","minimum":1,"maximum":5}},"required":["level"],"additionalProperties":false})";
-  tool.strict = true;
-  return tool;
+void RegisterPressing(llm::Agent& agent) {
+  (void)agent.RegisterCommand(
+      "set_pressing_intensity", "Raise or lower the pressing intensity",
+      llm::Params(llm::Param<int>("level").Range(1, 5).Required()),
+      [](int level) -> llm::CommandOutcome {
+        std::cout << "  coach applies pressing level " << level << "\n";
+        return llm::CommandOutcome{true, R"({"applied":true})", {}};
+      });
 }
 
 llm::ContextUpdate Update(const std::string& revision) {
@@ -68,14 +68,6 @@ llm::ContextUpdate Update(const std::string& revision) {
   update.recent_history = "possession 42%, opponent shots 3";
   update.context_revision = revision;
   return update;
-}
-
-llm::CommandResult ResultFor(const std::string& call_id) {
-  llm::CommandResult result;
-  result.command_call_id = call_id;
-  result.name = "set_pressing_intensity";
-  result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
-  return result;
 }
 
 }  // namespace
@@ -105,7 +97,7 @@ int main() {
   provider_options.transport = std::make_shared<ScriptedTransport>();
   llm::Agent agent(llm::openai::CreateProvider(std::move(provider_options)),
                    std::move(config));
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   std::cout << "-- decision 1: a normal round\n";
   agent.UpdateContext(Update("rev-62"));
@@ -119,12 +111,18 @@ int main() {
   agent.UpdateContext(Update("rev-63"));
   agent.DecideAsync().get();
 
-  std::cout << "\n-- recording the first decision's results\n";
-  std::vector<llm::CommandResult> results;
-  for (const llm::CommandCall& call : first.completion.command_calls) {
-    results.push_back(ResultFor(call.id));
+  std::cout << "\n-- preparing and executing the first decision\n";
+  llm::PrepareResult prepared = agent.PrepareCommands(first.decision_id);
+  if (!prepared.ok()) {
+    std::cerr << "could not prepare commands: " << prepared.error << "\n";
+    return 1;
   }
-  agent.RecordCommandResults(first.decision_id, results);
+  std::vector<llm::CommandResult> results;
+  results.reserve(prepared.commands.size());
+  for (llm::PreparedCommand& command : prepared.commands) {
+    results.push_back(std::move(command).Invoke());
+  }
+  agent.RecordCommandResults(first.decision_id, std::move(results));
 
   std::cout << "\n-- decision 2, then discarding it (stale revision)\n";
   agent.UpdateContext(Update("rev-70"));

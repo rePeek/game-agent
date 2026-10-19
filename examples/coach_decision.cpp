@@ -120,7 +120,7 @@ int main() {
   if (std::getenv("OPENAI_API_KEY") == nullptr) {
     std::cout << "Set OPENAI_API_KEY to run this example against the API.\n"
               << "It sends one completion with " << request.commands.size()
-              << " tools and a tool_choice of '"
+              << " commands and a command_choice of '"
               << request.command_choice.ToString() << "'.\n"
               << "See examples/offline_transport.cpp for the same flow without "
                  "a network.\n";

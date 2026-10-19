@@ -1,36 +1,43 @@
 # game-agent
 
-A C++20 SDK for **structured tool calling**: one request in, one validated batch
-of tool calls out.
+A C++20 SDK for **structured command calling**: a game registers its own C++
+functions, the model picks them, and the SDK hands back validated, bound
+callables that the game chooses when to run.
 
 ```
-context + tool definitions
+context + command definitions
            |
            v
    provider.Complete(request)          one model request, no retries into a
-           |                           conversation, no tool execution
+           |                           conversation, no command execution
            v
    CompletionResult
-     status         Success | NoToolCalls | InvalidToolCalls | Truncated |
+     status         Success | NoCommandCalls | InvalidCommandCalls | Truncated |
                     Refused | Unsupported | ProviderError
-     tool_calls     ids, names and argument JSON, validated
+     command_calls  ids, names and argument JSON, validated
            |
            v
-   the application decides what to execute and what to remember
+   Agent::PrepareCommands()            decode arguments, bind the C++ callback,
+           |                           run nothing
+           v
+   the game invokes the bound commands at its own tick boundary, then
+   Agent::RecordCommandResults() moves the transcript forward
 ```
 
-The SDK does not chat, does not run an agent loop and does not execute tools.
-That is deliberate: a game or an application owns its state, its permissions and
-its side effects, and it needs the model's decisions as data, not as prose.
+The SDK does not chat, does not run an agent loop and never executes a command.
+That is deliberate: a game owns its state, its permissions and its side effects,
+and it needs the model's decisions as data — bound to the game's own functions,
+but not applied on the SDK's schedule.
 
 ## What it does and does not do
 
 | Does | Does not |
 | --- | --- |
-| Describe tools with JSON schemas and forward them to the provider | Execute tools or apply their results |
-| Force tool calling (`tool_choice`) and request strict schemas | Open the next decision window on its own |
-| Return every tool call in order, with ids and raw arguments | Stream tokens or SSE |
-| Validate the batch (known tools, count, JSON, schema) before Success | Summarize history with another model call |
+| Register C++ functions with typed parameters and derive the JSON Schema | Execute commands or apply their results |
+| Force command calling and request strict schemas | Open the next decision window on its own |
+| Return every command call in order, with ids and raw arguments | Stream tokens or SSE |
+| Validate the batch (known commands, count, JSON, schema) before `Success` | Summarize history with another model call |
+| Bind validated arguments to the registered callback (`PrepareCommands`) | Run the callback for you |
 | Keep the transcript of a decision stream (`llm::Agent`) | Let a rejected or stale batch into that transcript |
 | Report failures as statuses instead of silent fallbacks | Provide a general chat/text-generation API |
 
@@ -38,11 +45,11 @@ its side effects, and it needs the model's decisions as data, not as prose.
 
 `CompletionStatus` is the only thing a caller has to branch on:
 
-| Status | Meaning | Safe to execute the batch? |
+| Status | Meaning | Safe to prepare and execute? |
 | --- | --- | --- |
 | `Success` | The batch passed every check | yes |
-| `NoToolCalls` | The model answered with text or nothing | no |
-| `InvalidToolCalls` | Unknown tool, bad count, unparseable or schema-breaking arguments | no |
+| `NoCommandCalls` | The model answered with text or nothing | no |
+| `InvalidCommandCalls` | Unknown command, bad count, unparseable or schema-breaking arguments | no |
 | `Truncated` | The token limit cut the completion off | no |
 | `Refused` | The model refused, or a content filter blocked it | no |
 | `Unsupported` | The request needs a guarantee this provider cannot make | no |
@@ -53,174 +60,221 @@ raw body) and `result.provider_metadata` keeps the raw provider response.
 
 ## Quick start
 
-```cpp
-#include <iostream>
-#include <llm/core.h>
-#include <llm/openai.h>
-
-int main() {
-  llm::ModelRequest request;
-  request.model = llm::openai::models::kGpt56;
-  request.messages = {
-      llm::Message::System(
-          "You are the head coach. Answer only with tool calls."),
-      llm::Message::User(
-          "Minute 62, 1-1, opponent presses high down our left side."),
-  };
-
-  llm::ToolDefinition pressing;
-  pressing.name = "set_pressing_intensity";
-  pressing.description = "Raise or lower how aggressively the team presses";
-  pressing.parameters_schema_json = R"({
-    "type": "object",
-    "properties": {"level": {"type": "integer", "minimum": 1, "maximum": 5}},
-    "required": ["level"],
-    "additionalProperties": false
-  })";
-  pressing.strict = true;
-
-  request.tools = {
-      pressing,
-      // A decision round that changes nothing must be expressible, otherwise a
-      // forced tool call pushes the model into inventing a change.
-      llm::ToolDefinition{"keep_current_tactics",
-                          "Keep the current setup",
-                          R"({"type":"object","properties":{"reason_code":{"type":"string"}},"required":["reason_code"],"additionalProperties":false})",
-                          true},
-  };
-  request.tool_choice = llm::ToolChoice::Required();
-  request.max_tool_calls = 3;  // application policy
-
-  auto provider = llm::openai::CreateProviderFromEnvironment();  // OPENAI_API_KEY
-  const llm::CompletionResult result = provider->Complete(request);
-
-  if (!result.IsSuccess()) {
-    std::cerr << llm::ToString(result.status) << ": " << result.ErrorMessage()
-              << "\n";
-    return 1;
-  }
-
-  for (const llm::ToolCall& call : result.tool_calls) {
-    // The application dispatches; the SDK never does.
-    std::cout << call.name << " " << call.arguments_json << "\n";
-  }
-}
-```
-
-Runnable versions: [`examples/coach_decision.cpp`](examples/coach_decision.cpp)
-(real API) and [`examples/offline_transport.cpp`](examples/offline_transport.cpp)
-(scripted transport, no key, no network — it also prints the request body the
-SDK would send).
-
-## Agents
-
-A game owns one `llm::Agent` per decision stream (one coach, one side) and drives
-it:
+### An Agent with typed commands
 
 ```cpp
+#include <llm/sdk.h>
+
 llm::AgentConfig config;
 config.id = "home";                       // how this stream appears in logs
 config.model = llm::openai::models::kGpt56;
-config.system_prompt = "You are the head coach. Answer only with tool calls.";
+config.system_prompt = "You are the head coach. Answer only with command calls.";
 config.context.max_messages = 32;         // transcript budget
-config.max_tokens = 300;
-config.max_tool_calls = 3;                // enforced by the validator
+config.context.max_input_tokens = 8000;   // approximate request budget
+config.max_output_tokens = 300;
+config.max_command_calls = 3;             // enforced by the validator
 
-llm::Agent agent(llm::openai::CreateProviderFromEnvironment(), std::move(config));
-agent.SetTools(coach_tools);              // std::vector<llm::ToolDefinition>
+llm::Agent agent(std::move(config));
+agent.SetProvider(llm::openai::CreateProviderFromEnvironment());
+
+// Register the game's own functions. The parameter list types the callback, so
+// a mismatch is a compile-time error, and the JSON Schema is derived from it.
+agent.RegisterCommand(
+    "set_pressing_intensity", "Raise or lower how aggressively the team presses",
+    llm::Params(llm::Param<int>("level").Range(1, 5).Required(),
+                llm::Param<std::string>("reason_code")
+                    .OneOf("chasing", "stable", "protect")
+                    .Required()),
+    [&coach](int level, const std::string& reason) -> llm::CommandOutcome {
+      return coach.SetPressing(level, reason);
+    });
 
 // A decision window opens: the world changed...
 agent.UpdateContext({.current_context = board.Describe(),
                      .recent_history = coach.RecentTrends(),
+                     .decision_context = "minute 62, score 1-1",
                      .context_revision = board.Revision()});
 // ...and the model is asked, without blocking the tick.
 std::future<llm::DecisionResult> future = agent.DecideAsync();
 
 // Later in the game loop:
-if (agent.WaitForIdle(std::chrono::milliseconds(0))) {
-  const llm::DecisionResult decision = future.get();
-  if (decision.status == llm::DecisionStatus::Completed &&
-      decision.completion.IsSuccess() &&
-      decision.context_revision == board.Revision()) {   // staleness check
-    auto results = coach_tools.ExecuteBatch(decision.completion.tool_calls);
-    agent.RecordToolResults(decision.decision_id, results);
-  } else {
-    agent.DiscardDecision(decision.decision_id);
-  }
+const llm::DecisionResult decision = future.get();
+if (decision.status != llm::DecisionStatus::Completed ||
+    !decision.completion.IsSuccess()) {
+  return;  // handle a refusal or a model error
 }
+if (decision.context_revision != board.Revision()) {
+  agent.DiscardDecision(decision.decision_id);  // stale answer
+  return;
+}
+
+// Bind the model's arguments to the registered callbacks. No side effects yet.
+llm::PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
+if (!prepared.ok()) {
+  agent.DiscardDecision(decision.decision_id);  // e.g. bad arguments
+  return;
+}
+
+// The game chooses the execution point.
+std::vector<llm::CommandResult> results;
+for (llm::PreparedCommand& command : prepared.commands) {
+  results.push_back(std::move(command).Invoke());
+}
+agent.RecordCommandResults(decision.decision_id, std::move(results));
 ```
 
 What the agent guarantees:
 
-- **state is not history**: `UpdateContext` replaces the snapshot and the
-  recent-history window, so old states never pile up. It may be called at any
-  time, including while a decision is in flight — the update then applies to the
+- **state is not history**: `UpdateContext` replaces the snapshot, the
+  recent-history window and the decision framing. It may be called at any time,
+  including while a decision is in flight — the update then applies to the
   *next* decision, never to the request already sent;
 - **one decision at a time**, per agent: while a decision is in flight or
   awaiting results, a new one is refused as `Busy`. Two agents may share one
   provider and be in flight simultaneously; they share nothing else;
-- **atomic confirmation**: a decision enters the transcript only when the
-  application reports exactly one result per tool call. Otherwise nothing is
-  recorded and the decision stays pending; `DiscardDecision` drops it instead
-  (a stale revision, a rolled-back transaction);
+- **typed registration**: `RegisterCommand` records one declaration that drives
+  both the schema the model sees and the decoder used to bind arguments, so the
+  two can never disagree. A callback must return `llm::CommandOutcome` (or
+  `void`, for a command with no result);
+- **prepare never runs anything**: `PrepareCommands` decodes and binds the whole
+  batch. If any call cannot be decoded, the batch fails as a whole and no
+  command is returned — never half a decision;
+- **one-shot commands**: `PreparedCommand` is move-only and `Invoke()` succeeds
+  exactly once. A command is invalidated when its decision is recorded,
+  discarded, or the agent is closed;
+- **atomic confirmation**: a decision enters the transcript only when the game
+  reports exactly one result per command call, naming the same commands.
+  Otherwise nothing is recorded and the decision stays pending;
+- **visibility of failure**: a command that throws, or is no longer valid, is
+  reported as a failed `CommandOutcome` instead of escaping into the game loop;
 - **staleness is visible**: every decision carries the `context_revision` it was
   taken from; whether that is still current is the game's call;
 - **no blocking**: `DecideAsync` snapshots the request on the calling thread and
-  runs the provider on the agent's own worker. `Close()` refuses further work and
-  discards a decision that returns afterwards; the destructor joins the worker.
+  runs the provider on the agent's own worker. `Close()` refuses further work,
+  invalidates prepared commands and answers a decision that returns afterwards
+  as `Closed`; the destructor joins the worker.
 
-`llm::Context` is the internal component the agent owns: it keeps the current
-snapshot, the recent-history window, the confirmed decisions and the projection
-budget. The system prompt, the tools, the model and the provider belong to the
-agent. The transcript is trimmed deterministically by `max_messages` and
-`max_decisions`: whole decisions are dropped oldest-first, never half of one,
-and `RenderedContext` reports what was kept. No summarization model call is
+`WaitForIdle()` means *quiescence* (no provider call in flight), which is not the
+same as the future being ready.
+
+### Parameters and the generated schema
+
+`llm::Param<T>` supports `bool`, integers, floating point, `std::string` and
+string enumerations. Fluent constraints: `Description`, `Required`/`Optional`,
+`Default`, `Range`/`Min`/`Max`, `MinLength`/`MaxLength`, `OneOf`.
+
+The generated schema only uses constraints the SDK validator implements, so a
+schema the SDK produces is always one it can enforce.
+
+### Context, budgets and memory
+
+`llm::Context` is the component the Agent owns: the current snapshot, the
+recent-history window, the decision framing and the confirmed decisions. The
+transcript is trimmed deterministically, oldest whole decision first:
+
+- `max_messages` / `max_decisions` bound the rendered request;
+- `max_memory_decisions` bounds what is kept in memory;
+- `max_input_tokens` (approximate, see `EstimateTokens`) covers the system
+  prompt, the command schemas and the messages; `reserved_output_tokens` is
+  subtracted first. If even the fixed content and the newest decision do not fit,
+  the agent answers `ContextTooLarge` **without sending anything**.
+
+A decision is stored and trimmed as one unit — its framing user turn, the
+assistant command calls and one result per call. No summarization model call is
 involved.
 
-## Feeding a previous decision back
+## Using a provider directly
 
-`llm::Agent` does this for you; the section is here because the pieces it uses
-are public. `llm::Message` keeps the tool vocabulary, so a decision round —
-the assistant's tool calls plus their results — can be sent back as context.
-The SDK builds neither the messages nor the loop:
+The provider is also usable without an Agent (see the coach decision example).
+The vocabulary is the same; only the binding is left to you.
+
+```cpp
+llm::ModelRequest request;
+request.model = llm::openai::models::kGpt56;
+request.messages = {
+    llm::Message::System("You are the head coach. Answer only with command calls."),
+    llm::Message::User("Minute 62, 1-1, opponent presses high down our left side."),
+};
+request.commands = {
+    llm::CommandDefinition{
+        "set_pressing_intensity",
+        "Raise or lower how aggressively the team presses",
+        R"({"type":"object","properties":{"level":{"type":"integer","minimum":1,"maximum":5}},"required":["level"],"additionalProperties":false})",
+        true},
+    // A round that changes nothing must be expressible, otherwise a forced
+    // command call pushes the model into inventing a change.
+    llm::CommandDefinition{
+        "keep_current_tactics", "Keep the current setup",
+        R"({"type":"object","properties":{"reason_code":{"type":"string"}},"required":["reason_code"],"additionalProperties":false})",
+        true},
+};
+request.command_choice = llm::CommandChoice::Required();
+request.max_command_calls = 3;  // application policy
+
+auto provider = llm::openai::CreateProviderFromEnvironment();  // OPENAI_API_KEY
+const llm::CompletionResult result = provider->Complete(request);
+
+if (!result.IsSuccess()) {
+  std::cerr << llm::ToString(result.status) << ": " << result.ErrorMessage() << "\n";
+  return 1;
+}
+for (const llm::CommandCall& call : result.command_calls) {
+  // The application dispatches; the SDK never does.
+  std::cout << call.name << " " << call.arguments_json << "\n";
+}
+```
+
+### Feeding a previous decision back
+
+`llm::Agent` does this for you; the pieces are public because a direct provider
+user may want them. A `CommandResult` is built from a `CommandOutcome`:
 
 ```cpp
 llm::ModelRequest next;
 next.messages = previous_messages;
-next.messages.push_back(decision.ToAssistantMessage());  // assistant + tool_calls
-for (const auto& call : decision.tool_calls) {
-  llm::ToolResult applied;
-  applied.tool_call_id = call.id;
+next.messages.push_back(previous.ToAssistantMessage());  // assistant + command_calls
+for (const llm::CommandCall& call : previous.command_calls) {
+  llm::CommandResult applied;
+  applied.command_call_id = call.id;
   applied.name = call.name;
-  applied.content_json = R"({"applied":true})";  // your tool output as JSON text
-  next.messages.push_back(llm::Message::ToolResult(applied));
+  applied.outcome = coach.Execute(call);  // your result, as a CommandOutcome
+  next.messages.push_back(llm::Message::CommandResultMessage(applied));
 }
 next.messages.push_back(llm::Message::User("They switched to a low block."));
 ```
 
 On the wire this becomes the OpenAI messages an OpenAI-compatible server
 expects: an assistant turn with `tool_calls` (arguments as the raw JSON text)
-followed by one `role: "tool"` message per call.
+followed by one `role: "tool"` message per call. The tool message body has one
+shape for success and failure alike:
+
+```json
+{"ok": true, "result": {...}}
+{"ok": false, "error": "substitution_not_allowed"}
+```
+
+so the success flag is transmitted rather than implied by the payload.
 
 ## Validation
 
 `Success` is only ever returned for a batch that passed:
 
-- the batch size window (at least one call; at most `ModelRequest::max_tool_calls`);
-- ids that can be answered with tool results;
-- tool names that the request actually offered;
+- the batch size window (at least one call; at most `ModelRequest::max_command_calls`);
+- ids that can be answered with command results;
+- command names that the request actually offered;
 - arguments that parse as a JSON object;
-- arguments that satisfy the tool's JSON Schema (type, enum, const, properties,
-  required, additionalProperties, items with min/maxItems, minimum/maximum,
-  minLength/maxLength, anyOf/oneOf/allOf).
+- arguments that satisfy the command's JSON Schema (type, enum, const,
+  properties, required, additionalProperties, items with min/maxItems,
+  minimum/maximum, minLength/maxLength, anyOf/oneOf/allOf).
 
 An application can add its own policy by injecting a validator:
 
 ```cpp
-class OneChangePerRound : public llm::ToolCallValidator {
+class OneChangePerRound : public llm::CommandValidator {
  public:
-  llm::ValidationReport Validate(const llm::ModelRequest&,
-                                 const std::vector<llm::ToolCall>& calls) const override;
+  llm::ValidationReport Validate(
+      const llm::ModelRequest&,
+      const std::vector<llm::CommandCall>& calls) const override;
 };
 
 llm::openai::ProviderOptions options;
@@ -230,22 +284,19 @@ options.validator = std::make_shared<const OneChangePerRound>();
 
 ## Providers and guarantees
 
-A provider is what an Agent wraps; it is also usable directly (see the coach
-decision example).
-
-A provider publishes what it can actually guarantee
-(`ProviderCapabilities`: parallel tool calls, forced tool choice, strict
-schemas, tool results in the context). If a request needs a guarantee the
-provider does not have, the SDK answers `Unsupported` **before** sending
-anything, rather than pretending the model was constrained. Callers that accept
-SDK-side validation instead set `allow_validation_downgrade = true`; the
-validation still runs, and the result carries a warning.
+A provider publishes what it can actually guarantee (`ProviderCapabilities`:
+parallel command calls, forced command choice, strict schemas, command results
+in the context). If a request needs a guarantee the provider does not have, the
+SDK answers `Unsupported` **before** sending anything, rather than pretending
+the model was constrained. Callers that accept SDK-side validation instead set
+`allow_validation_downgrade = true`; the validation still runs, and the result
+carries a warning.
 
 ```cpp
 llm::openai::ProviderOptions options;
-options.api_key = "...",
+options.api_key = "...";
 options.base_url = "https://openrouter.ai/api";  // any OpenAI-compatible endpoint
-options.capabilities.strict_tool_schema = false; // what this endpoint honours
+options.capabilities.strict_command_schema = false;  // what this endpoint honours
 options.retry.max_attempts = 5;
 options.timeout_seconds = 30;
 options.extra_headers.push_back({"X-Title", "my game"});
@@ -295,14 +346,14 @@ find_package(game-agent CONFIG REQUIRED COMPONENTS core openai)
 target_link_libraries(my_target PRIVATE llm::openai)
 ```
 
-Four modules, one target each:
+Five modules, one target each:
 
 | Component | Target | Depends on |
 | --- | --- | --- |
 | `core` | `llm::core` | the standard library |
-| `tools` | `llm::tools` | `llm::core` (JSON is private) |
-| `context` | `llm::context` | `llm::core` (the Agent and its Context; no provider, no TLS) |
-| `openai` | `llm::openai` | `llm::core`, `llm::tools` (+ OpenSSL for its transport) |
+| `commands` | `llm::commands` | `llm::core` (JSON is private) |
+| `context` | `llm::context` | `llm::core`, `llm::commands` (the Agent and its Context; no provider, no TLS) |
+| `openai` | `llm::openai` | `llm::core`, `llm::commands` (+ OpenSSL for its transport) |
 | `sdk` | `llm::sdk` | all of the above (an INTERFACE target, no extra archive) |
 
 `target_link_libraries(... llm::sdk)` is the shortcut for everything, and only
@@ -315,14 +366,15 @@ The public headers are standard-library-only; these are implementation details:
 
 - **cpp-httplib** — vendored header-only HTTP client, used by the OpenAI
   provider (with OpenSSL for TLS);
-- **nlohmann/json** — request/response JSON and schema validation; an existing
-  `nlohmann_json::nlohmann_json` target is reused when the enclosing project
-  provides one, otherwise `find_package()` is tried, otherwise CMake fetches the
-  official release with a pinned SHA256;
+- **nlohmann/json** — request/response JSON, schema generation and validation;
+  an existing `nlohmann_json::nlohmann_json` target is reused when the enclosing
+  project provides one, otherwise `find_package()` is tried, otherwise CMake
+  fetches the official release with a pinned SHA256;
 - **OpenSSL** — required by the HTTP transport;
 - **GoogleTest** — tests only, fetched by CMake.
 
-A consumer of the installed package needs OpenSSL and Threads only.
+A consumer of the installed package needs OpenSSL and Threads only, and only
+when it links `llm::openai`.
 
 ## Requirements
 
@@ -332,15 +384,15 @@ A consumer of the installed package needs OpenSSL and Threads only.
 ## Examples
 
 - [Coach agent](examples/coach_agent.cpp) — the intended flow for a game: an
-  Agent, asynchronous decisions, revision checks and history that moves forward
-  only when results are reported (runs offline without a key).
+  Agent, typed command registration, asynchronous decisions, revision checks,
+  `PrepareCommands`/`Invoke` and history that moves forward only when results
+  are recorded (runs offline without a key).
 - [Coach decision](examples/coach_decision.cpp) — the provider on its own:
-  context, tools, one completion, a validated batch, caller-side dispatch.
+  context, commands, one completion, a validated batch, caller-side dispatch.
 - [Offline transport](examples/offline_transport.cpp) — the same flow with a
   scripted transport, including what an invalid batch looks like.
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the build scripts, testing and
-linting.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the build scripts, testing and linting.
 
 ## Acknowledgments
 

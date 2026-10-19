@@ -22,7 +22,8 @@ bool ParseSchema(const std::string& text,
     return false;
   }
   if (!schema.is_object()) {
-    error = "command '" + command_name + "' parameters schema must be a JSON object";
+    error = "command '" + command_name +
+            "' parameters schema must be a JSON object";
     return false;
   }
   return true;
@@ -85,7 +86,8 @@ bool AppendMessage(const Message& message,
   return true;
 }
 
-nlohmann::json BuildCommandChoice(const CommandChoice& choice, std::string& error) {
+nlohmann::json BuildCommandChoice(const CommandChoice& choice,
+                                  std::string& error) {
   switch (choice.mode) {
     case CommandChoiceMode::Auto:
       return "auto";
@@ -95,7 +97,7 @@ nlohmann::json BuildCommandChoice(const CommandChoice& choice, std::string& erro
       return "none";
     case CommandChoiceMode::Specific:
       if (choice.command_name.empty()) {
-        error = "tool_choice is Specific but names no tool";
+        error = "command choice is Specific but names no command";
         return nullptr;
       }
       return nlohmann::json{{"type", "function"},
@@ -163,7 +165,8 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
                        outcome.error)) {
         return outcome;
       }
-      nlohmann::json function{{"name", command.name}, {"parameters", parameters}};
+      nlohmann::json function{{"name", command.name},
+                              {"parameters", parameters}};
       if (!command.description.empty()) {
         function["description"] = command.description;
       }

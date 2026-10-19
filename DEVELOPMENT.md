@@ -209,7 +209,8 @@ Each module has its own test binary, so the linker checks the module boundary:
   target that links only `llm::core` (no JSON, no HTTP, no TLS, not even a test
   framework). If the core ever grows a third-party dependency, it stops
   building;
-- `tests/tools/` — `llm_tools_tests` (schema and batch validation);
+- `tests/commands/` — `llm_commands_tests` (parameter descriptors, schema
+  generation, argument decoding, registry and batch validation);
 - `tests/context/` — `llm_context_tests` (snapshot replacement, decision
   contiguity, budget trimming);
 - `tests/agent/` — `llm_agent_tests` (request shape, staging, atomic
@@ -344,7 +345,7 @@ uv run scripts/build.py --tests          # then: ./build/tests/integration/conso
 ```
 
 Log records carry classifications and counts (kind, status, http code, attempts,
-tokens, tool counts, schema summaries). Provider and model text is never logged:
+tokens, command counts, schema summaries). Provider and model text is never logged:
 it stays in `CompletionResult` for the caller.
 
 ## Dependencies
@@ -356,7 +357,7 @@ implementation details of the shipped components:
 
 - **nlohmann-json**: request/response JSON and schema validation (an existing
   `nlohmann_json::nlohmann_json` target is reused; otherwise `find_package()`,
-  otherwise a pinned upstream fetch by CMake). Private to `llm::tools` and
+  otherwise a pinned upstream fetch by CMake). Private to `llm::commands` and
   `llm::openai`;
 - **cpp-httplib**: HTTP client for the transport (vendored header-only, private
   to `llm::openai`);

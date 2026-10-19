@@ -15,8 +15,6 @@
 ///  * a decision enters the history atomically: the assistant turn with its
 ///    command calls plus one result per call, or nothing at all.
 
-#include "llm/commands/prepared_command.hpp"
-#include "llm/commands/registry.hpp"
 #include "llm/context/context.h"
 #include "llm/core/logger.h"
 #include "llm/core/provider.h"
@@ -34,6 +32,9 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "llm/commands/prepared_command.hpp"
+#include "llm/commands/registry.hpp"
 
 namespace llm {
 
@@ -152,10 +153,6 @@ class Agent final {
   /// The definitions currently offered to the model, in registration order.
   std::vector<CommandDefinition> Commands() const;
 
-  /// Compatibility shim: registers definitions without callbacks. Kept only
-  /// while the tests move to RegisterCommand; new code must not use it.
-  void SetCommands(std::vector<CommandDefinition> commands);
-
   // --- context ------------------------------------------------------------
   /// Records the latest world state and recent-history window.
   ///
@@ -187,7 +184,8 @@ class Agent final {
   /// Confirms a pending decision with the results the game executed. The
   /// results must cover every command call of that decision, exactly once, and
   /// name the same commands; otherwise nothing is recorded and the decision
-  /// stays pending. On success the whole decision enters the history atomically.
+  /// stays pending. On success the whole decision enters the history
+  /// atomically.
   RecordOutcome RecordCommandResults(std::uint64_t decision_id,
                                      std::vector<CommandResult> results);
 
@@ -208,8 +206,8 @@ class Agent final {
   bool WaitForIdle(std::chrono::milliseconds timeout) const;
 
   /// Refuses further decisions: a submitted-but-unfinished decision is answered
-  /// as Closed when it returns, and nothing is staged. Already-prepared commands
-  /// are invalidated, so they cannot be executed after the close.
+  /// as Closed when it returns, and nothing is staged. Already-prepared
+  /// commands are invalidated, so they cannot be executed after the close.
   ///
   /// Closing does not abort an HTTP request that is already running; the
   /// destructor joins the worker, so destroying an agent can wait for the

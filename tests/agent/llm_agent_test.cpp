@@ -19,14 +19,12 @@ namespace {
 
 constexpr char kRawArguments[] = R"({"level":4})";
 
-CommandDefinition PressingTool() {
-  CommandDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "Pressing intensity";
-  tool.parameters_schema_json =
-      R"({"type":"object","properties":{"level":{"type":"integer"}},"required":["level"]})";
-  tool.strict = true;
-  return tool;
+void RegisterPressing(Agent& agent) {
+  (void)agent.RegisterCommand(
+      "set_pressing_intensity", "Pressing intensity",
+      Params(Param<int>("level").Required()), [](int level) -> CommandOutcome {
+        return CommandOutcome{true, std::to_string(level), {}};
+      });
 }
 
 CompletionResult SuccessfulBatch() {
@@ -114,7 +112,7 @@ ContextUpdate Update(std::string revision, std::string context = "Minute 62.") {
 }
 
 CommandResult ResultFor(const std::string& call_id,
-                      const std::string& name = "set_pressing_intensity") {
+                        const std::string& name = "set_pressing_intensity") {
   CommandResult result;
   result.command_call_id = call_id;
   result.name = name;
@@ -142,7 +140,7 @@ AgentConfig DefaultConfig() {
 TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   std::future<DecisionResult> future = agent.DecideAsync();
@@ -185,13 +183,14 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
 TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
 
-  EXPECT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
-            RecordOutcome::Recorded);
+  EXPECT_EQ(
+      agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
+      RecordOutcome::Recorded);
   EXPECT_EQ(agent.PendingDecisionCount(), 0u);
   EXPECT_FALSE(agent.IsBusy());
 
@@ -243,7 +242,7 @@ TEST(LlmAgentTest, IncompleteResultsRecordNothing) {
   EXPECT_EQ(agent.RecordCommandResults(decision.decision_id, {}),
             RecordOutcome::IncompleteResults);
   EXPECT_EQ(agent.RecordCommandResults(decision.decision_id,
-                                    {ResultFor("call_unknown")}),
+                                       {ResultFor("call_unknown")}),
             RecordOutcome::IncompleteResults);
   EXPECT_EQ(agent.RecordCommandResults(999, {ResultFor("call_a")}),
             RecordOutcome::UnknownDecision);
@@ -280,9 +279,9 @@ TEST(LlmAgentTest, AgentsShareAProviderButNotAContext) {
 
   const DecisionResult home_decision = Decide(home, Update("rev-h"));
   ASSERT_TRUE(home_decision.completion.IsSuccess());
-  EXPECT_EQ(
-      home.RecordCommandResults(home_decision.decision_id, {ResultFor("call_a")}),
-      RecordOutcome::Recorded);
+  EXPECT_EQ(home.RecordCommandResults(home_decision.decision_id,
+                                      {ResultFor("call_a")}),
+            RecordOutcome::Recorded);
 
   const DecisionResult away_decision = Decide(away, Update("rev-a"));
   ASSERT_TRUE(away_decision.completion.IsSuccess());
@@ -306,7 +305,7 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
 
   agent.SetSystemPrompt("You are the assistant coach.");
   agent.SetModel("another-model");
-  agent.SetCommands({});
+  agent.ClearCommands();
   EXPECT_EQ(agent.model(), "another-model");
   EXPECT_TRUE(agent.Commands().empty());
 
@@ -330,8 +329,9 @@ TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   const DecisionResult refused = Decide(agent, Update("rev-63"));
   EXPECT_EQ(refused.status, DecisionStatus::Closed);
   EXPECT_EQ(provider->requests.size(), 1u);
-  EXPECT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
-            RecordOutcome::Closed);
+  EXPECT_EQ(
+      agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
+      RecordOutcome::Closed);
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 0u);
 }
 
@@ -349,7 +349,7 @@ TEST(LlmAgentTest, WaitForIdleReportsWhenTheWorkerIsDone) {
 TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62", "Minute 62."));
   std::future<DecisionResult> future = agent.DecideAsync();
@@ -368,8 +368,9 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
       << "the decision reports the snapshot it was taken from";
 
   // ... and the next decision sees the newer state.
-  ASSERT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
-            RecordOutcome::Recorded);
+  ASSERT_EQ(
+      agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
+      RecordOutcome::Recorded);
   const DecisionResult second = agent.DecideAsync().get();
   ASSERT_TRUE(second.completion.IsSuccess());
   EXPECT_EQ(second.context_revision, "rev-70");
@@ -413,11 +414,11 @@ TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
   // The game may execute in whatever order it likes (here reversed); the
   // transcript is normalized to the order the model asked in, so every tool
   // turn sits next to its call in a deterministic position.
-  EXPECT_EQ(agent.RecordCommandResults(
-                decision.decision_id,
-                {ResultFor("call_b", "set_defensive_line"),
-                 ResultFor("call_a")}),
-            RecordOutcome::Recorded);
+  EXPECT_EQ(
+      agent.RecordCommandResults(
+          decision.decision_id,
+          {ResultFor("call_b", "set_defensive_line"), ResultFor("call_a")}),
+      RecordOutcome::Recorded);
 
   // Keep the snapshot alive: ContextSnapshot() returns a copy.
   const Context context = agent.ContextSnapshot();
@@ -434,29 +435,28 @@ TEST(LlmAgentTest, ResultsThatNameTheWrongCommandAreRejected) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = TwoCallBatch();
   Agent agent(provider, DefaultConfig());
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "set_pressing_intensity", "",
-                      Params(Param<int>("level").Required()),
-                      [](int) { return CommandOutcome{true, {}, {}}; })
-                  .ok());
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "set_defensive_line", "",
-                      Params(Param<std::string>("height").Required()),
-                      [](const std::string&) {
-                        return CommandOutcome{true, {}, {}};
-                      })
-                  .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand("set_pressing_intensity", "",
+                           Params(Param<int>("level").Required()),
+                           [](int) { return CommandOutcome{true, {}, {}}; })
+          .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand(
+              "set_defensive_line", "",
+              Params(Param<std::string>("height").Required()),
+              [](const std::string&) { return CommandOutcome{true, {}, {}}; })
+          .ok());
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   // call_b is reported under the wrong command name.
-  EXPECT_EQ(agent.RecordCommandResults(
-                decision.decision_id,
-                {ResultFor("call_a"), ResultFor("call_b")}),
-            RecordOutcome::NameMismatch);
+  EXPECT_EQ(
+      agent.RecordCommandResults(decision.decision_id,
+                                 {ResultFor("call_a"), ResultFor("call_b")}),
+      RecordOutcome::NameMismatch);
   EXPECT_EQ(agent.PendingDecisionCount(), 1u) << "nothing was recorded";
   EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
 }
@@ -465,12 +465,12 @@ TEST(LlmAgentTest, FailedResultsAreRecordedAsExecutedFacts) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   Agent agent(provider, DefaultConfig());
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "set_pressing_intensity", "",
-                      Params(Param<int>("level").Required()),
-                      [](int) { return CommandOutcome{true, {}, {}}; })
-                  .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand("set_pressing_intensity", "",
+                           Params(Param<int>("level").Required()),
+                           [](int) { return CommandOutcome{true, {}, {}}; })
+          .ok());
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
@@ -494,7 +494,7 @@ TEST(LlmAgentTest, ContextTooLargeIsRefusedBeforeSendingAnything) {
   AgentConfig config = DefaultConfig();
   config.context.max_input_tokens = 8;
   Agent agent(provider, config);
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   ContextUpdate update = Update("rev-62");
   update.current_context =
@@ -512,16 +512,16 @@ TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   Agent agent(provider, DefaultConfig());
-  agent.SetCommands({PressingTool()});
+  RegisterPressing(agent);
 
   ContextUpdate update = Update("rev-62");
   update.decision_context = "Minute 62, 1-1, they press high.";
   agent.UpdateContext(std::move(update));
   const DecisionResult first = agent.DecideAsync().get();
   ASSERT_TRUE(first.completion.IsSuccess());
-  EXPECT_EQ(agent.RecordCommandResults(first.decision_id,
-                                       {ResultFor("call_a")}),
-            RecordOutcome::Recorded);
+  EXPECT_EQ(
+      agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
+      RecordOutcome::Recorded);
 
   const Context context = agent.ContextSnapshot();
   ASSERT_EQ(context.decisions().size(), 1u);

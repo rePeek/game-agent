@@ -210,10 +210,10 @@ struct Agent::Impl {
             Refused(DecisionStatus::Closed, context.context_revision(),
                     "agent is closed");
       } else if (!provider || model.empty()) {
-        attempt.refusal = Refused(
-            DecisionStatus::NotConfigured, context.context_revision(),
-            !provider ? "agent has no provider configured"
-                      : "agent has no model configured");
+        attempt.refusal =
+            Refused(DecisionStatus::NotConfigured, context.context_revision(),
+                    !provider ? "agent has no provider configured"
+                              : "agent has no model configured");
       } else if (in_flight_revision.has_value() || !pending.empty()) {
         attempt.refusal =
             Refused(DecisionStatus::Busy, context.context_revision(),
@@ -297,8 +297,7 @@ struct Agent::Impl {
         log_sink,
         result.completion.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
         log_event::kDecisionCompleted,
-        "status=" + ToString(result.completion.status) +
-            ", commands=" +
+        "status=" + ToString(result.completion.status) + ", commands=" +
             std::to_string(result.completion.command_calls.size()) +
             ", tokens=" + std::to_string(result.completion.usage.total_tokens) +
             ", attempts=" + std::to_string(result.completion.http_attempts) +
@@ -464,8 +463,8 @@ CommandRegistrationResult Agent::RegisterCommandErased(
             LogContext{agent_id, 0});
   } else {
     EmitLog(log_sink, LogLevel::Warning,
-            log_event::kCommandRegistrationRejected,
-            "command=" + name, LogContext{agent_id, 0});
+            log_event::kCommandRegistrationRejected, "command=" + name,
+            LogContext{agent_id, 0});
   }
   return result;
 }
@@ -504,23 +503,6 @@ CommandRegistrationResult Agent::ClearCommands() {
 std::vector<CommandDefinition> Agent::Commands() const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   return impl_->registry.Definitions();
-}
-
-void Agent::SetCommands(std::vector<CommandDefinition> commands) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->registry.Clear();
-  for (CommandDefinition& definition : commands) {
-    RegisteredCommand command;
-    command.definition = std::move(definition);
-    const std::string name = command.definition.name;
-    command.bind = [name](const std::string&) {
-      CommandBinding binding;
-      binding.error = "command '" + name +
-                      "' was registered as a definition only (SetCommands)";
-      return binding;
-    };
-    impl_->registry.Add(std::move(command));
-  }
 }
 
 void Agent::UpdateContext(ContextUpdate update) {
@@ -603,15 +585,18 @@ PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
   }
   const Impl::Pending* pending = impl_->FindPendingLocked(decision_id);
   if (pending == nullptr) {
-    return {PrepareStatus::UnknownDecision, {},
+    return {PrepareStatus::UnknownDecision,
+            {},
             "no decision with that id is awaiting results"};
   }
   if (pending->command_calls.empty()) {
-    return {PrepareStatus::NoCommands, {},
+    return {PrepareStatus::NoCommands,
+            {},
             "the decision contains no command calls"};
   }
   if (pending->registry_version != impl_->registry.version()) {
-    return {PrepareStatus::RegistryChanged, {},
+    return {PrepareStatus::RegistryChanged,
+            {},
             "the registered commands changed after this decision was taken"};
   }
 
@@ -635,8 +620,7 @@ PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
       return result;
     }
     result.commands.emplace_back(
-        call.id, call.name, std::move(binding.invoke),
-        [live]() {
+        call.id, call.name, std::move(binding.invoke), [live]() {
           const std::shared_ptr<Liveness> token = live.lock();
           return token != nullptr && !token->closed.load();
         });
@@ -723,9 +707,8 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   lock.unlock();
 
   EmitLog(logger, LogLevel::Info, log_event::kDecisionRecorded,
-          "decision_id=" + std::to_string(decision_id) +
-              ", results=" + std::to_string(results.size()) +
-              ", rev=" + record_revision,
+          "decision_id=" + std::to_string(decision_id) + ", results=" +
+              std::to_string(results.size()) + ", rev=" + record_revision,
           LogContext{id, request_id});
   return RecordOutcome::Recorded;
 }

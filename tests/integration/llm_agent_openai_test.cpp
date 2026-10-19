@@ -19,24 +19,17 @@ namespace {
 /// The argument text the scripted server sends: preserved byte for byte.
 constexpr char kWireArguments[] = R"({"level": 4})";
 
-CommandDefinition PressingTool() {
-  CommandDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "Pressing intensity";
-  tool.parameters_schema_json =
-      R"({"type":"object","properties":{"level":{"type":"integer","minimum":1,"maximum":5}},"required":["level"],"additionalProperties":false})";
-  tool.strict = true;
-  return tool;
-}
-
-CommandDefinition LineTool() {
-  CommandDefinition tool;
-  tool.name = "set_defensive_line";
-  tool.description = "Defensive line height";
-  tool.parameters_schema_json =
-      R"({"type":"object","properties":{"height":{"type":"string","enum":["high","medium","low"]}},"required":["height"],"additionalProperties":false})";
-  tool.strict = true;
-  return tool;
+void RegisterCommands(Agent& agent) {
+  (void)agent.RegisterCommand(
+      "set_pressing_intensity", "Pressing intensity",
+      Params(Param<int>("level").Range(1, 5).Required()),
+      [](int) { return CommandOutcome{true, {}, {}}; });
+  (void)agent.RegisterCommand(
+      "set_defensive_line", "Defensive line height",
+      Params(Param<std::string>("height")
+                 .OneOf("high", "medium", "low")
+                 .Required()),
+      [](const std::string&) { return CommandOutcome{true, {}, {}}; });
 }
 
 std::string WireResponse(const std::string& tool_calls_json) {
@@ -103,7 +96,8 @@ CommandResult ResultFor(const std::string& call_id, const std::string& name) {
   CommandResult result;
   result.command_call_id = call_id;
   result.name = name;
-  result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
+  result.outcome.success = true;
+  result.outcome.content_json = R"({"applied":true})";
   return result;
 }
 
@@ -126,7 +120,7 @@ struct Fixture {
     config.max_command_calls = 3;
     agent = std::make_shared<Agent>(
         llm::openai::CreateProvider(std::move(options)), std::move(config));
-    agent->SetCommands({PressingTool(), LineTool()});
+    RegisterCommands(*agent);
   }
 
   /// One decision round: update the context, then ask.
@@ -149,7 +143,8 @@ TEST(LlmAgentOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
       << decision.completion.ErrorMessage();
   EXPECT_EQ(decision.context_revision, "rev-62");
   ASSERT_EQ(decision.completion.command_calls.size(), 2u);
-  EXPECT_EQ(decision.completion.command_calls[0].name, "set_pressing_intensity");
+  EXPECT_EQ(decision.completion.command_calls[0].name,
+            "set_pressing_intensity");
   EXPECT_EQ(decision.completion.command_calls[0].arguments_json, kWireArguments)
       << "the argument text the model produced is preserved verbatim";
   EXPECT_EQ(decision.completion.usage.total_tokens, 28);
@@ -205,7 +200,8 @@ TEST(LlmAgentOpenAITest, CommandResultsFeedTheNextRequest) {
             kWireArguments);
   EXPECT_EQ(body["messages"][2]["role"], "tool");
   EXPECT_EQ(body["messages"][2]["tool_call_id"], "call_a");
-  EXPECT_EQ(body["messages"][2]["content"], R"({"ok":true,"result":{"applied":true}})");
+  EXPECT_EQ(body["messages"][2]["content"],
+            R"({"ok":true,"result":{"applied":true}})");
   EXPECT_EQ(body["messages"][3]["role"], "tool");
   EXPECT_EQ(body["messages"][3]["tool_call_id"], "call_b");
   EXPECT_EQ(body["messages"][4]["role"], "user");
@@ -334,6 +330,51 @@ TEST(LlmAgentOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
     EXPECT_EQ(record.command_results[0].command_call_id, "call_a");
   }
   EXPECT_EQ(fixture.transport->bodies.size(), 4u);
+}
+
+TEST(LlmAgentOpenAITest, RegisteredCommandsRoundTripThroughPrepareAndRecord) {
+  Fixture fixture;
+  fixture.transport->responses.push_back(TwoCallResponse());
+
+  const DecisionResult first = fixture.Decide("rev-62");
+  ASSERT_TRUE(first.completion.IsSuccess()) << first.completion.ErrorMessage();
+
+  // The schema the model saw was generated from the registered parameters.
+  const nlohmann::json first_body = fixture.transport->Body(0);
+  ASSERT_EQ(first_body["tools"].size(), 2u);
+  const nlohmann::json& level =
+      first_body["tools"][0]["function"]["parameters"]["properties"]["level"];
+  EXPECT_EQ(level["type"], "integer");
+  EXPECT_EQ(level["minimum"], 1);
+  EXPECT_EQ(level["maximum"], 5);
+
+  llm::PrepareResult prepared =
+      fixture.agent->PrepareCommands(first.decision_id);
+  ASSERT_TRUE(prepared.ok()) << prepared.error;
+  ASSERT_EQ(prepared.commands.size(), 2u);
+  EXPECT_EQ(prepared.commands[0].Name(), "set_pressing_intensity");
+  EXPECT_EQ(prepared.commands[1].Name(), "set_defensive_line");
+
+  std::vector<CommandResult> results;
+  results.reserve(prepared.commands.size());
+  for (PreparedCommand& command : prepared.commands) {
+    results.push_back(std::move(command).Invoke());
+  }
+  ASSERT_TRUE(results[0].outcome.success);
+  EXPECT_EQ(fixture.agent->RecordCommandResults(first.decision_id,
+                                                std::move(results)),
+            RecordOutcome::Recorded);
+
+  fixture.transport->responses.push_back(OneCallResponse());
+  const DecisionResult second = fixture.Decide("rev-70");
+  ASSERT_TRUE(second.completion.IsSuccess());
+
+  // The confirmed decision, in the unified result shape, is on the wire.
+  const nlohmann::json body = fixture.transport->Body(1);
+  ASSERT_EQ(body["messages"].size(), 5u);
+  EXPECT_EQ(body["messages"][2]["role"], "tool");
+  EXPECT_EQ(body["messages"][2]["content"], R"({"ok":true})");
+  EXPECT_EQ(body["messages"][3]["content"], R"({"ok":true})");
 }
 
 }  // namespace

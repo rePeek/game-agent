@@ -8,14 +8,15 @@
  *     -> agent.UpdateContext(context)     // the world changed
  *     -> agent.DecideAsync()              // never blocks the tick
  *   ... the game keeps simulating ...
- *     -> future.get() / WaitForIdle()     // decision is ready
+ *     -> future.get()                     // the model answered
  *     -> the game checks the context revision
- *     -> the game executes the batch itself
- *     -> agent.RecordCommandResults(...)     // history moves forward
+ *     -> agent.PrepareCommands(id)        // bind arguments, run nothing
+ *     -> the game invokes the commands at its own tick boundary
+ *     -> agent.RecordCommandResults(...)  // history moves forward
  *
- * The SDK owns the transcript (system prompt, tools, current context, recent
- * history, confirmed decisions). The game owns the state, the side effects and
- * the decision to apply anything.
+ * The SDK owns the transcript (system prompt, commands, current context, recent
+ * history, confirmed decisions) and the argument binding. The game owns the
+ * state, the side effects and the decision to apply anything.
  *
  * Without OPENAI_API_KEY the example drives a scripted transport, so it runs
  * anywhere and still shows the whole flow.
@@ -64,7 +65,7 @@ class EventPrinter final : public llm::ILogger {
   }
 };
 
-/// Answers with a fixed tool-call batch: used when no API key is available.
+/// Answers with a fixed command-call batch: used when no API key is available.
 class ScriptedTransport : public llm::ITransport {
  public:
   llm::HttpResponse Send(const llm::HttpRequest& request) override {
@@ -92,58 +93,49 @@ class ScriptedTransport : public llm::ITransport {
   std::size_t calls_ = 0;
 };
 
-llm::CommandDefinition PressingTool() {
-  llm::CommandDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "Raise or lower how aggressively the team presses";
-  tool.parameters_schema_json = R"({
-    "type": "object",
-    "properties": {
-      "level": {"type": "integer", "minimum": 1, "maximum": 5},
-      "reason_code": {"type": "string", "enum": ["chasing", "stable", "protect"]}
-    },
-    "required": ["level", "reason_code"],
-    "additionalProperties": false
-  })";
-  tool.strict = true;
-  return tool;
+/// The game registers its own C++ functions; the SDK derives the schema the
+/// model sees and the argument binding from the same declaration.
+void RegisterCoachCommands(llm::Agent& agent) {
+  (void)agent.RegisterCommand(
+      "set_pressing_intensity",
+      "Raise or lower how aggressively the team presses",
+      llm::Params(llm::Param<int>("level").Range(1, 5).Required(),
+                  llm::Param<std::string>("reason_code")
+                      .OneOf("chasing", "stable", "protect")
+                      .Required()),
+      [](int level, const std::string& reason) -> llm::CommandOutcome {
+        std::cout << "  set_pressing_intensity(level=" << level
+                  << ", reason=" << reason << ")\n";
+        return llm::CommandOutcome{true, R"({"applied":true})", {}};
+      });
+
+  (void)agent.RegisterCommand(
+      "set_defensive_line", "Move the defensive line up or down the pitch",
+      llm::Params(llm::Param<std::string>("height")
+                      .OneOf("high", "medium", "low")
+                      .Required()),
+      [](const std::string& height) -> llm::CommandOutcome {
+        std::cout << "  set_defensive_line(height=" << height << ")\n";
+        return llm::CommandOutcome{true, R"({"applied":true})", {}};
+      });
+
+  // A round that changes nothing has to be expressible, otherwise a forced
+  // command call pushes the model into inventing a change.
+  (void)agent.RegisterCommand(
+      "keep_current_tactics",
+      "Keep the current setup; no change is needed this round",
+      llm::Params(llm::Param<std::string>("reason_code")
+                      .OneOf("stable", "no_signal")
+                      .Required()),
+      [](const std::string& reason) -> llm::CommandOutcome {
+        std::cout << "  keep_current_tactics(reason=" << reason << ")\n";
+        return llm::CommandOutcome{true, R"({"applied":true})", {}};
+      });
 }
 
-llm::CommandDefinition LineTool() {
-  llm::CommandDefinition tool;
-  tool.name = "set_defensive_line";
-  tool.description = "Move the defensive line up or down the pitch";
-  tool.parameters_schema_json = R"({
-    "type": "object",
-    "properties": {
-      "height": {"type": "string", "enum": ["high", "medium", "low"]}
-    },
-    "required": ["height"],
-    "additionalProperties": false
-  })";
-  tool.strict = true;
-  return tool;
-}
-
-/// A round that changes nothing has to be expressible, otherwise a forced tool
-/// call pushes the model into inventing a change.
-llm::CommandDefinition KeepTool() {
-  llm::CommandDefinition tool;
-  tool.name = "keep_current_tactics";
-  tool.description = "Keep the current setup; no change is needed this round";
-  tool.parameters_schema_json = R"({
-    "type": "object",
-    "properties": {
-      "reason_code": {"type": "string", "enum": ["stable", "no_signal"]}
-    },
-    "required": ["reason_code"],
-    "additionalProperties": false
-  })";
-  tool.strict = true;
-  return tool;
-}
-
-llm::ContextUpdate BuildContext(int minute, const std::string& revision) {
+llm::ContextUpdate BuildContext(int minute,
+                                const std::string& revision,
+                                const std::string& decision_context) {
   llm::ContextUpdate update;
   update.current_context =
       "minute=" + std::to_string(minute) +
@@ -151,37 +143,21 @@ llm::ContextUpdate BuildContext(int minute, const std::string& revision) {
       "board=4-3-3, medium block, pressing 2, defensive line medium";
   update.recent_history =
       "last 10 minutes: possession 42%, opponent shots 3, our shots 0";
+  update.decision_context = decision_context;
   update.context_revision = revision;
   return update;
 }
 
-/// Executing a decision is the game's job. Here we only report what would be
-/// applied, and hand the SDK a result per call (the SDK never runs tools).
-std::vector<llm::CommandResult> ExecuteBatch(
-    const std::vector<llm::CommandCall>& calls) {
-  std::vector<llm::CommandResult> results;
-  results.reserve(calls.size());
-  for (const llm::CommandCall& call : calls) {
-    std::cout << "  applying " << call.name << " " << call.arguments_json
-              << "\n";
-    llm::CommandResult result;
-    result.command_call_id = call.id;
-    result.name = call.name;
-    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
-    result.outcome.success = true;
-    results.push_back(std::move(result));
-  }
-  return results;
-}
-
-/// One decision window: submit, (in a game: keep simulating), collect, and
-/// move the history forward only if the answer is still about the current
-/// state.
+/// One decision window: submit, (in a game: keep simulating), collect, bind and
+/// execute, and move the history forward only if the answer is still about the
+/// current state.
 void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
   std::cout << "decision window (minute " << minute << ", revision " << revision
             << ")\n";
 
-  agent.UpdateContext(BuildContext(minute, revision));
+  agent.UpdateContext(BuildContext(
+      minute, revision,
+      "decision at minute " + std::to_string(minute) + ", score 1-1"));
   std::future<llm::DecisionResult> future = agent.DecideAsync();
 
   // A game would keep ticking here. The example simply waits for the answer.
@@ -208,16 +184,32 @@ void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
     return;
   }
 
-  const std::vector<llm::CommandResult> results =
-      ExecuteBatch(decision.completion.command_calls);
+  // Binding argues no side effects; the game decides when to run.
+  llm::PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
+  if (!prepared.ok()) {
+    std::cout << "  could not prepare commands: " << prepared.error << "\n\n";
+    agent.DiscardDecision(decision.decision_id);
+    return;
+  }
 
-  switch (agent.RecordCommandResults(decision.decision_id, results)) {
+  std::vector<llm::CommandResult> results;
+  results.reserve(prepared.commands.size());
+  for (llm::PreparedCommand& command : prepared.commands) {
+    results.push_back(std::move(command).Invoke());
+  }
+
+  switch (
+      agent.RecordCommandResults(decision.decision_id, std::move(results))) {
     case llm::RecordOutcome::Recorded:
       std::cout << "  decision " << decision.decision_id
                 << " recorded; the next request sees it as history\n\n";
       break;
     case llm::RecordOutcome::IncompleteResults:
       std::cout << "  results were incomplete; nothing was recorded\n\n";
+      break;
+    case llm::RecordOutcome::NameMismatch:
+      std::cout
+          << "  a result named a different command; nothing was recorded\n\n";
       break;
     case llm::RecordOutcome::UnknownDecision:
       std::cout << "  no such pending decision\n\n";
@@ -258,7 +250,8 @@ int main() {
   config.id = "home";
   config.model = llm::openai::models::kGpt56;
   config.system_prompt =
-      "You are the head coach. Answer only with tool calls that change or keep "
+      "You are the head coach. Answer only with command calls that change or "
+      "keep "
       "the tactical setup. Never explain in prose.";
   config.context.max_messages = 32;  // budget for the transcript
   config.context.max_decisions = 4;
@@ -267,7 +260,7 @@ int main() {
   config.logger = logger;
 
   llm::Agent agent(provider, std::move(config));
-  agent.SetCommands({PressingTool(), LineTool(), KeepTool()});
+  RegisterCoachCommands(agent);
 
   RunWindow(agent, 62, "rev-62");
   RunWindow(agent, 70, "rev-70");

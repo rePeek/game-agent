@@ -20,13 +20,10 @@ namespace {
 
 constexpr char kContextText[] = "Minute 62, opponent presses high.";
 
-CommandDefinition PressingTool() {
-  CommandDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "pressing";
-  tool.parameters_schema_json =
-      R"({"type":"object","properties":{"level":{"type":"integer"}},"required":["level"]})";
-  return tool;
+void RegisterPressing(Agent& agent) {
+  (void)agent.RegisterCommand("set_pressing_intensity", "pressing",
+                              Params(Param<int>("level").Required()),
+                              [](int) { return CommandOutcome{true, {}, {}}; });
 }
 
 CompletionResult SuccessfulBatch() {
@@ -85,7 +82,8 @@ CommandResult ResultFor(const std::string& call_id) {
   CommandResult result;
   result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
-  result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
+  result.outcome.success = true;
+  result.outcome.content_json = R"({"applied":true})";
   return result;
 }
 
@@ -102,7 +100,7 @@ struct Fixture {
     config.system_prompt = "You are the head coach.";
     config.logger = injected != nullptr ? std::move(injected) : logger;
     agent = std::make_shared<Agent>(provider, std::move(config));
-    agent->SetCommands({PressingTool()});
+    RegisterPressing(*agent);
   }
 
   /// One decision round: update the context, then ask.
@@ -118,30 +116,34 @@ TEST(LlmAgentLoggingTest, LifecycleEventsCarryTheAgentAndRequestId) {
 
   const DecisionResult decision = fixture.Decide("rev-62");
   ASSERT_TRUE(decision.completion.IsSuccess());
-  fixture.agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")});
+  fixture.agent->RecordCommandResults(decision.decision_id,
+                                      {ResultFor("call_a")});
 
   const std::vector<LogRecord> records = fixture.logger->Records();
-  ASSERT_EQ(records.size(), 4u);
+  ASSERT_EQ(records.size(), 5u);
   EXPECT_EQ(records[0].event, log_event::kSessionCreated);
-  EXPECT_EQ(records[1].event, log_event::kDecisionStarted);
-  EXPECT_EQ(records[2].event, log_event::kDecisionCompleted);
-  EXPECT_EQ(records[3].event, log_event::kDecisionRecorded);
+  EXPECT_EQ(records[1].event, log_event::kCommandRegistered);
+  EXPECT_EQ(records[2].event, log_event::kDecisionStarted);
+  EXPECT_EQ(records[3].event, log_event::kDecisionCompleted);
+  EXPECT_EQ(records[4].event, log_event::kDecisionRecorded);
 
   for (const LogRecord& record : records) {
     EXPECT_EQ(record.session_id, "home");
   }
   EXPECT_EQ(records[0].request_id, 0u) << "agent creation is not a decision";
-  EXPECT_EQ(records[1].request_id, 1u);
-  EXPECT_EQ(records[2].request_id, records[1].request_id)
+  EXPECT_EQ(records[2].request_id, 1u);
+  EXPECT_EQ(records[3].request_id, records[2].request_id)
       << "started and completed describe the same attempt";
-  EXPECT_NE(records[1].message.find("rev=rev-62"), std::string::npos);
-  EXPECT_NE(records[2].message.find("status=success"), std::string::npos);
-  EXPECT_NE(records[2].message.find("commands=1"), std::string::npos);
-  EXPECT_NE(records[2].message.find("tokens=15"), std::string::npos);
-  EXPECT_NE(records[3].message.find("decision_id=1"), std::string::npos);
-  EXPECT_EQ(records[3].request_id, records[1].request_id)
+  EXPECT_NE(records[2].message.find("rev=rev-62"), std::string::npos);
+  EXPECT_NE(records[3].message.find("status=success"), std::string::npos);
+  EXPECT_NE(records[3].message.find("commands=1"), std::string::npos);
+  EXPECT_NE(records[3].message.find("tokens=15"), std::string::npos);
+  EXPECT_NE(records[4].message.find("decision_id=1"), std::string::npos);
+  EXPECT_EQ(records[4].request_id, records[2].request_id)
       << "recording a decision is correlated with the attempt that produced it";
   EXPECT_NE(records[0].message.find("home"), std::string::npos);
+  EXPECT_NE(records[1].message.find("set_pressing_intensity"),
+            std::string::npos);
 }
 
 TEST(LlmAgentLoggingTest, RejectionsAndDiscardsExplainThemselves) {
@@ -240,7 +242,7 @@ TEST(LlmAgentLoggingTest, AsynchronousDecisionsAreCorrelated) {
     const DecisionResult decision = fixture.Decide(revision);
     ASSERT_TRUE(decision.completion.IsSuccess());
     ASSERT_EQ(fixture.agent->RecordCommandResults(decision.decision_id,
-                                               {ResultFor("call_a")}),
+                                                  {ResultFor("call_a")}),
               RecordOutcome::Recorded);
   }
 
@@ -265,7 +267,8 @@ TEST(LlmAgentLoggingTest, OnlyMetadataIsLogged) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
   const DecisionResult decision = fixture.Decide("rev-62");
-  fixture.agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")});
+  fixture.agent->RecordCommandResults(decision.decision_id,
+                                      {ResultFor("call_a")});
 
   for (const LogRecord& record : fixture.logger->Records()) {
     EXPECT_EQ(record.message.find(kContextText), std::string::npos)
@@ -284,7 +287,7 @@ TEST(LlmAgentLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
   AgentConfig config;
   config.model = "gpt-5.6";
   Agent silent(fixture.provider, std::move(config));
-  silent.SetCommands({PressingTool()});
+  RegisterPressing(silent);
 
   silent.UpdateContext(Update("rev-62"));
   const DecisionResult decision = silent.DecideAsync().get();
@@ -307,7 +310,7 @@ TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   agent = std::make_shared<Agent>(provider, std::move(config));
-  agent->SetCommands({PressingTool()});
+  RegisterPressing(*agent);
 
   agent->UpdateContext(Update("rev-62"));
   const DecisionResult decision = agent->DecideAsync().get();
@@ -330,7 +333,7 @@ TEST(LlmAgentLoggingTest, AThrowingLoggerDoesNotChangeTheDecision) {
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(decision.decision_id, 1u);
   EXPECT_EQ(fixture.agent->RecordCommandResults(decision.decision_id,
-                                             {ResultFor("call_a")}),
+                                                {ResultFor("call_a")}),
             RecordOutcome::Recorded);
   EXPECT_EQ(fixture.agent->ContextSnapshot().decision_count(), 1u);
 }
