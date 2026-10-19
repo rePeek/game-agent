@@ -22,8 +22,8 @@ This document provides comprehensive information about developing, building, and
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/ClickHouse/ai-sdk-cpp.git
-cd ai-sdk-cpp
+git clone git@github.com:rePeek/game-agent.git
+cd game-agent
 ```
 
 ### 2. Install Python Dependencies
@@ -203,21 +203,24 @@ ctest --parallel $(nproc)
 
 The suite is made of:
 
-- `tests/unit/llm_core_test.cpp` — the standard-library-only core types;
-- `tests/unit/llm_openai_test.cpp` — request building, response parsing and
-  provider status mapping against a fake transport, including one test that
-  exercises the real cpp-httplib transport through a refused connection;
-- `tests/unit/llm_validation_test.cpp` — the tool-call validator;
-- `tests/unit/llm_context_test.cpp` — snapshot replacement, decision
-  contiguity and budget trimming;
-- `tests/unit/llm_session_test.cpp` — staging, atomic confirmation, the
-  one-decision-at-a-time rule and asynchronous submission;
-- `tests/integration/llm_session_openai_test.cpp` — Session + Context + the
+Each module has its own test binary, so the linker checks the module boundary:
+
+- `tests/core/` — `llm_core_tests` (the protocol types) and `llm_core_smoke`, a
+  target that links only `llm::core` (no JSON, no HTTP, no TLS, not even a test
+  framework). If the core ever grows a third-party dependency, it stops
+  building;
+- `tests/tools/` — `llm_tools_tests` (schema and batch validation);
+- `tests/context/` — `llm_context_tests` (snapshot replacement, decision
+  contiguity, budget trimming, staging, atomic confirmation, the
+  one-decision-at-a-time rule and asynchronous submission) driven by a scripted
+  `IModelProvider`, so it needs no provider and no TLS;
+- `tests/providers/openai/` — `llm_openai_tests` (request building, response
+  parsing, provider status mapping) against a fake transport, including one
+  test that exercises the real cpp-httplib transport through a refused
+  connection;
+- `tests/integration/` — `llm_integration_tests`: Session + Context + the
   OpenAI provider end to end over a scripted transport, asserting the wire
-  bodies of consecutive rounds;
-- `tests/standalone/llm_core_smoke.cpp` — a target that links only
-  `llm::core` (no JSON, no HTTP, no TLS, not even a test framework). If the
-  core ever grows a third-party dependency, it stops building.
+  bodies of consecutive rounds.
 
 GoogleTest is fetched by CMake FetchContent when tests are enabled:
 
@@ -227,7 +230,8 @@ uv run scripts/build.py --tests
 
 ### Writing Tests
 
-Add the file under `tests/unit/` and list it in `tests/CMakeLists.txt`. The
+Add the file under the module's test directory (`tests/<module>/`) and list it
+in that directory's `CMakeLists.txt`. The
 provider takes its transport from `ProviderOptions`, so a test can script
 responses instead of hitting the API:
 
@@ -327,9 +331,12 @@ implementation details of the shipped components:
 
 - **nlohmann-json**: request/response JSON and schema validation (an existing
   `nlohmann_json::nlohmann_json` target is reused; otherwise `find_package()`,
-  otherwise a pinned upstream fetch by CMake)
-- **cpp-httplib**: HTTP client for the transport (vendored header-only)
-- **openssl**: TLS for HTTPS endpoints (system-provided)
+  otherwise a pinned upstream fetch by CMake). Private to `llm::tools` and
+  `llm::openai`;
+- **cpp-httplib**: HTTP client for the transport (vendored header-only, private
+  to `llm::openai`);
+- **openssl**: TLS for HTTPS endpoints (system-provided; only `llm::openai`
+  needs it, and the installed target exports it for static linking)
 
 Neither nlohmann-json nor cpp-httplib appears in a public header, so a
 consumer of the installed package only needs OpenSSL and Threads.

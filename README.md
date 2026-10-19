@@ -1,4 +1,4 @@
-# AI SDK CPP
+# game-agent
 
 A C++20 SDK for **structured tool calling**: one request in, one validated batch
 of tool calls out.
@@ -288,20 +288,30 @@ uv run scripts/build.py --mode release --tests --export-compile-commands
 ## Using it from another project
 
 ```cmake
-find_package(ai-sdk-cpp CONFIG REQUIRED COMPONENTS core openai)
+find_package(game-agent CONFIG REQUIRED COMPONENTS core openai)
 target_link_libraries(my_target PRIVATE llm::openai)
 ```
 
-Components: `core` (standard-library-only protocol types), `validation`
-(schemas), `context` (`Context`/`Session`, no provider dependency), `http`
-(transport implementation), `openai`, and `sdk` (everything).
-`target_link_libraries(... llm::sdk)` is the shortcut for all of them.
+Four modules, one target each:
+
+| Component | Target | Depends on |
+| --- | --- | --- |
+| `core` | `llm::core` | the standard library |
+| `tools` | `llm::tools` | `llm::core` (JSON is private) |
+| `context` | `llm::context` | `llm::core` (no provider, no TLS) |
+| `openai` | `llm::openai` | `llm::core`, `llm::tools` (+ OpenSSL for its transport) |
+| `sdk` | `llm::sdk` | all of the above (an INTERFACE target, no extra archive) |
+
+`target_link_libraries(... llm::sdk)` is the shortcut for everything, and only
+`llm::openai` brings OpenSSL into the link line. `#include <llm/sdk.h>` is the
+matching convenience header.
 
 ## Dependencies
 
 The public headers are standard-library-only; these are implementation details:
 
-- **cpp-httplib** — vendored header-only HTTP client (with OpenSSL for TLS);
+- **cpp-httplib** — vendored header-only HTTP client, used by the OpenAI
+  provider (with OpenSSL for TLS);
 - **nlohmann/json** — request/response JSON and schema validation; an existing
   `nlohmann_json::nlohmann_json` target is reused when the enclosing project
   provides one, otherwise `find_package()` is tried, otherwise CMake fetches the

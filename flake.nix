@@ -1,5 +1,5 @@
 {
-  description = "ai-sdk-cpp — a unified C++ SDK for multiple AI/LLM providers";
+  description = "game-agent — a structured tool-calling C++ SDK for OpenAI-compatible models";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -91,7 +91,7 @@
 
               shellHook = ''
                 echo ""
-                echo "  ai-sdk-cpp dev shell · ${name}"
+                echo "  game-agent dev shell · ${name}"
                 echo "  compiler: $(${stdenv.cc.targetPrefix}c++ --version | head -n 1)"
                 echo ""
                 echo "  Build:  uv run scripts/build.py --tests --export-compile-commands"
@@ -105,13 +105,13 @@
         {
           # Default shell: nixpkgs' GCC toolchain.
           default = mkDevShell {
-            name = "ai-sdk-cpp";
+            name = "game-agent";
             stdenv = pkgs.stdenv;
           };
 
           # Same environment, but built with the nixpkgs Clang toolchain.
           clang = mkDevShell {
-            name = "ai-sdk-cpp-clang";
+            name = "game-agent-clang";
             stdenv = pkgs.llvmPackages.stdenv;
           };
         };

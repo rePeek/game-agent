@@ -214,7 +214,7 @@ def main(mode: str, tests: bool, clean: bool, verbose: bool, export_compile_comm
         f"""[bold green]Build Results[/bold green]
 
 [bold]Built targets:[/bold]
-  📚 Libraries: {build_dir}/libllm-*.a (or .lib on Windows)
+  📚 Libraries: {build_dir}/src/**/libllm-*.a (or .lib on Windows)
   🎯 Examples: {build_dir}/examples/
 {f"  🧪 Tests: {build_dir}/tests/" if tests else ""}
 
