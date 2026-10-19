@@ -6,8 +6,8 @@
  *
  *   - what the request looks like on the wire;
  *   - a validated batch (Success);
- *   - a batch that fails schema validation (InvalidToolCalls);
- *   - a batch naming a tool the caller never offered (InvalidToolCalls).
+ *   - a batch that fails schema validation (InvalidCommandCalls);
+ *   - a batch naming a tool the caller never offered (InvalidCommandCalls).
  *
  * The same trick is how the SDK's own tests run in CI.
  *
@@ -61,7 +61,7 @@ llm::ModelRequest BuildRequest() {
       llm::Message::User("Opponent is pressing high down our left side."),
   };
 
-  llm::ToolDefinition tool;
+  llm::CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Raise or lower the pressing intensity";
   tool.parameters_schema_json = R"({
@@ -73,8 +73,8 @@ llm::ModelRequest BuildRequest() {
     "additionalProperties": false
   })";
   tool.strict = true;
-  request.tools = {tool};
-  request.tool_choice = llm::ToolChoice::Required();
+  request.commands = {tool};
+  request.command_choice = llm::CommandChoice::Required();
   return request;
 }
 
@@ -95,7 +95,7 @@ void RunScenario(const std::string& title, const std::string& response) {
     std::cout << "  warning: " << warning << "\n";
   }
   if (result.IsSuccess()) {
-    for (const auto& call : result.tool_calls) {
+    for (const auto& call : result.command_calls) {
       std::cout << "  call: " << call.name << " " << call.arguments_json
                 << " (id " << call.id << ")\n";
     }

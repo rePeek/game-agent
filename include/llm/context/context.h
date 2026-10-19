@@ -8,7 +8,7 @@
 ///
 /// | piece            | source                | strategy | | ---------------- |
 /// --------------------- | ------------------------------ | | system prompt |
-/// application           | kept                         | | tool definitions |
+/// application           | kept                         | | command definitions |
 /// application           | replaced on update             | | current context
 /// | application, per call | replaces the previous snapshot | | recent history
 /// | application, per call | replaces the previous window   | | decisions |
@@ -16,7 +16,7 @@
 ///
 /// Two rules matter for correctness:
 ///  * the current context is *state*, not history: it never accumulates;
-///  * an assistant tool-call message and the tool results answering it are
+///  * an assistant command-call message and the command results answering it are
 ///    stored — and trimmed — as one unit, so the model never sees half a
 ///    decision.
 ///
@@ -46,15 +46,15 @@ struct ContextUpdate {
   std::string context_revision;
 };
 
-/// One confirmed decision: the assistant turn that requested tools and the
+/// One confirmed decision: the assistant turn that requested commands and the
 /// results the application reported for them.
 struct DecisionRecord {
   std::uint64_t decision_id = 0;
   std::string context_revision;
-  Message assistant;                  // tool calls (+ any assistant text)
-  std::vector<Message> tool_results;  // one per tool call, in order
+  Message assistant;                  // command calls (+ any assistant text)
+  std::vector<Message> command_results;  // one per command call, in order
 
-  std::size_t MessageCount() const { return 1 + tool_results.size(); }
+  std::size_t MessageCount() const { return 1 + command_results.size(); }
 };
 
 struct ContextConfig {
@@ -100,7 +100,7 @@ class Context {
   // --- rendering ----------------------------------------------------------
   /// Renders the context: the newest decisions that fit, recent history and the
   /// current snapshot. The owner of the context prepends its system prompt and
-  /// adds its tools and model parameters.
+  /// adds its commands and model parameters.
   RenderedContext Render() const;
   std::vector<Message> BuildMessages() const { return Render().messages; }
 

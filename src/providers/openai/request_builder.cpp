@@ -8,7 +8,7 @@ namespace detail {
 namespace {
 
 bool ParseSchema(const std::string& text,
-                 const std::string& tool_name,
+                 const std::string& command_name,
                  nlohmann::json& schema,
                  std::string& error) {
   if (text.empty()) {
@@ -17,12 +17,12 @@ bool ParseSchema(const std::string& text,
   }
   schema = nlohmann::json::parse(text, nullptr, false);
   if (schema.is_discarded()) {
-    error = "tool '" + tool_name +
+    error = "command '" + command_name +
             "' has a parameters schema that is not valid JSON";
     return false;
   }
   if (!schema.is_object()) {
-    error = "tool '" + tool_name + "' parameters schema must be a JSON object";
+    error = "command '" + command_name + "' parameters schema must be a JSON object";
     return false;
   }
   return true;
@@ -43,7 +43,7 @@ bool AppendMessage(const Message& message,
       break;
 
     case Role::Assistant:
-      if (message.tool_calls.empty()) {
+      if (message.command_calls.empty()) {
         wire["content"] = message.content;
       } else {
         // A tool-only assistant turn must send null content, not "".
@@ -51,7 +51,7 @@ bool AppendMessage(const Message& message,
                               ? nlohmann::json(nullptr)
                               : nlohmann::json(message.content);
         nlohmann::json tool_calls = nlohmann::json::array();
-        for (const auto& call : message.tool_calls) {
+        for (const auto& call : message.command_calls) {
           if (call.name.empty()) {
             error = "assistant message has a tool call without a name";
             return false;
@@ -70,13 +70,13 @@ bool AppendMessage(const Message& message,
       break;
 
     case Role::Tool:
-      if (message.tool_call_id.empty()) {
+      if (message.command_call_id.empty()) {
         error = "tool message is missing tool_call_id";
         return false;
       }
       // OpenAI's tool message carries the id and the payload as text; `name`
       // is not part of it.
-      wire["tool_call_id"] = message.tool_call_id;
+      wire["tool_call_id"] = message.command_call_id;
       wire["content"] = message.content;
       break;
   }
@@ -85,21 +85,21 @@ bool AppendMessage(const Message& message,
   return true;
 }
 
-nlohmann::json BuildToolChoice(const ToolChoice& choice, std::string& error) {
+nlohmann::json BuildCommandChoice(const CommandChoice& choice, std::string& error) {
   switch (choice.mode) {
-    case ToolChoiceMode::Auto:
+    case CommandChoiceMode::Auto:
       return "auto";
-    case ToolChoiceMode::Required:
+    case CommandChoiceMode::Required:
       return "required";
-    case ToolChoiceMode::None:
+    case CommandChoiceMode::None:
       return "none";
-    case ToolChoiceMode::Specific:
-      if (choice.tool_name.empty()) {
+    case CommandChoiceMode::Specific:
+      if (choice.command_name.empty()) {
         error = "tool_choice is Specific but names no tool";
         return nullptr;
       }
       return nlohmann::json{{"type", "function"},
-                            {"function", {{"name", choice.tool_name}}}};
+                            {"function", {{"name", choice.command_name}}}};
   }
   error = "unknown tool_choice";
   return nullptr;
@@ -151,23 +151,23 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
     }
   }
 
-  if (!request.tools.empty()) {
+  if (!request.commands.empty()) {
     nlohmann::json tools = nlohmann::json::array();
-    for (const auto& tool : request.tools) {
-      if (tool.name.empty()) {
+    for (const auto& command : request.commands) {
+      if (command.name.empty()) {
         outcome.error = "every tool definition needs a name";
         return outcome;
       }
       nlohmann::json parameters;
-      if (!ParseSchema(tool.parameters_schema_json, tool.name, parameters,
+      if (!ParseSchema(command.parameters_schema_json, command.name, parameters,
                        outcome.error)) {
         return outcome;
       }
-      nlohmann::json function{{"name", tool.name}, {"parameters", parameters}};
-      if (!tool.description.empty()) {
-        function["description"] = tool.description;
+      nlohmann::json function{{"name", command.name}, {"parameters", parameters}};
+      if (!command.description.empty()) {
+        function["description"] = command.description;
       }
-      if (tool.strict) {
+      if (command.strict) {
         function["strict"] = true;
       }
       tools.push_back(
@@ -178,7 +178,7 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
 
   std::string choice_error;
   nlohmann::json tool_choice =
-      BuildToolChoice(request.tool_choice, choice_error);
+      BuildCommandChoice(request.command_choice, choice_error);
   if (!choice_error.empty()) {
     outcome.error = choice_error;
     return outcome;

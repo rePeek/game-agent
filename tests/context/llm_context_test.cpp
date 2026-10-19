@@ -34,26 +34,26 @@ ContextUpdate EmptyUpdate() {
 
 struct DecisionSpec {
   std::uint64_t id = 1;
-  std::string tool_name = "set_pressing_intensity";
+  std::string command_name = "set_pressing_intensity";
   std::string arguments = R"({"level":3})";
   std::string assistant_text;
 };
 
 DecisionRecord MakeDecision(const DecisionSpec& spec) {
-  ToolCall call{"call_" + std::to_string(spec.id), spec.tool_name,
+  CommandCall call{"call_" + std::to_string(spec.id), spec.command_name,
                 spec.arguments};
   DecisionRecord record;
   record.decision_id = spec.id;
   record.context_revision = "rev-" + std::to_string(spec.id);
-  record.assistant = Message::AssistantToolCalls({call});
+  record.assistant = Message::AssistantCommandCalls({call});
   if (!spec.assistant_text.empty()) {
     record.assistant.content = spec.assistant_text;
   }
-  ToolResult applied;
-  applied.tool_call_id = call.id;
+  CommandResult applied;
+  applied.command_call_id = call.id;
   applied.name = call.name;
   applied.content_json = R"({"applied":true})";
-  record.tool_results = {Message::ToolResult(applied)};
+  record.command_results = {Message::CommandResultMessage(applied)};
   return record;
 }
 
@@ -113,7 +113,7 @@ TEST(LlmContextTest, EmptyBlocksAreSkipped) {
             std::string::npos);
 }
 
-TEST(LlmContextTest, DecisionsKeepToolCallsAndResultsTogether) {
+TEST(LlmContextTest, DecisionsKeepCommandCallsAndResultsTogether) {
   Context context;
   context.SetContextUpdate(EmptyUpdate());
   context.AppendDecision(MakeDecision(DecisionSpec{1}));
@@ -129,15 +129,15 @@ TEST(LlmContextTest, DecisionsKeepToolCallsAndResultsTogether) {
   EXPECT_EQ(rendered.decisions_dropped, 0u);
 
   EXPECT_EQ(rendered.messages[0].role, Role::Assistant);
-  ASSERT_EQ(rendered.messages[0].tool_calls.size(), 1u);
-  EXPECT_EQ(rendered.messages[0].tool_calls[0].name, "set_pressing_intensity");
+  ASSERT_EQ(rendered.messages[0].command_calls.size(), 1u);
+  EXPECT_EQ(rendered.messages[0].command_calls[0].name, "set_pressing_intensity");
   EXPECT_EQ(rendered.messages[1].role, Role::Tool);
-  EXPECT_EQ(rendered.messages[1].tool_call_id, "call_1");
+  EXPECT_EQ(rendered.messages[1].command_call_id, "call_1");
 
   EXPECT_EQ(rendered.messages[2].role, Role::Assistant);
-  EXPECT_EQ(rendered.messages[2].tool_calls[0].name, "set_defensive_line");
+  EXPECT_EQ(rendered.messages[2].command_calls[0].name, "set_defensive_line");
   EXPECT_EQ(rendered.messages[3].role, Role::Tool);
-  EXPECT_EQ(rendered.messages[3].tool_call_id, "call_2");
+  EXPECT_EQ(rendered.messages[3].command_call_id, "call_2");
 
   EXPECT_EQ(rendered.messages[4].role, Role::User);
   EXPECT_NE(rendered.messages[4].content.find("Current context"),
@@ -145,19 +145,19 @@ TEST(LlmContextTest, DecisionsKeepToolCallsAndResultsTogether) {
 }
 
 TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
-  ToolCall first{"call_a", "set_pressing_intensity", R"({"level":4})"};
-  ToolCall second{"call_b", "set_defensive_line", R"({"height":"high"})"};
+  CommandCall first{"call_a", "set_pressing_intensity", R"({"level":4})"};
+  CommandCall second{"call_b", "set_defensive_line", R"({"height":"high"})"};
 
   DecisionRecord record;
   record.decision_id = 7;
   record.context_revision = "rev-7";
-  record.assistant = Message::AssistantToolCalls({first, second});
-  for (const ToolCall& call : {first, second}) {
-    ToolResult result;
-    result.tool_call_id = call.id;
+  record.assistant = Message::AssistantCommandCalls({first, second});
+  for (const CommandCall& call : {first, second}) {
+    CommandResult result;
+    result.command_call_id = call.id;
     result.name = call.name;
     result.content_json = R"({"applied":true})";
-    record.tool_results.push_back(Message::ToolResult(result));
+    record.command_results.push_back(Message::CommandResultMessage(result));
   }
   ASSERT_EQ(record.MessageCount(), 3u);
 
@@ -169,11 +169,11 @@ TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
   // assistant (2 tool calls) + 2 tool turns + the current context
   ASSERT_EQ(rendered.messages.size(), 4u);
   EXPECT_EQ(rendered.messages[0].role, Role::Assistant);
-  EXPECT_EQ(rendered.messages[0].tool_calls.size(), 2u);
+  EXPECT_EQ(rendered.messages[0].command_calls.size(), 2u);
   EXPECT_EQ(rendered.messages[1].role, Role::Tool);
-  EXPECT_EQ(rendered.messages[1].tool_call_id, "call_a");
+  EXPECT_EQ(rendered.messages[1].command_call_id, "call_a");
   EXPECT_EQ(rendered.messages[2].role, Role::Tool);
-  EXPECT_EQ(rendered.messages[2].tool_call_id, "call_b");
+  EXPECT_EQ(rendered.messages[2].command_call_id, "call_b");
   EXPECT_EQ(rendered.messages[3].role, Role::User);
 }
 
@@ -193,8 +193,8 @@ TEST(LlmContextTest, BudgetDropsWholeDecisionsOldestFirst) {
   EXPECT_EQ(rendered.decisions_dropped, 3u);
   ASSERT_EQ(rendered.messages.size(), 5u);  // 2*2 + 1
   // The two newest survive, the older three are gone as complete units.
-  EXPECT_EQ(rendered.messages[0].tool_calls[0].id, "call_4");
-  EXPECT_EQ(rendered.messages[2].tool_calls[0].id, "call_5");
+  EXPECT_EQ(rendered.messages[0].command_calls[0].id, "call_4");
+  EXPECT_EQ(rendered.messages[2].command_calls[0].id, "call_5");
   EXPECT_EQ(rendered.messages[4].role, Role::User);
 
   // The stored history is untouched: trimming is a rendering decision.
@@ -216,8 +216,8 @@ TEST(LlmContextTest, MaxDecisionsCapsWhatIsKept) {
   EXPECT_EQ(rendered.decisions_included, 2u);
   EXPECT_EQ(rendered.decisions_dropped, 2u);
   ASSERT_EQ(rendered.messages.size(), 5u);
-  EXPECT_EQ(rendered.messages[0].tool_calls[0].id, "call_3");
-  EXPECT_EQ(rendered.messages[2].tool_calls[0].id, "call_4");
+  EXPECT_EQ(rendered.messages[0].command_calls[0].id, "call_3");
+  EXPECT_EQ(rendered.messages[2].command_calls[0].id, "call_4");
 }
 
 TEST(LlmContextTest, EssentialBlocksAreSentEvenWithoutBudget) {

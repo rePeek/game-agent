@@ -19,7 +19,7 @@ struct ParsedCompletion {
   std::string finish_reason;  // raw wire value ("stop", "length", ...)
   std::string assistant_text;
   std::string refusal;  // non-empty when the model refused the request
-  std::vector<ToolCall> tool_calls;
+  std::vector<CommandCall> command_calls;
   Usage usage;
 };
 

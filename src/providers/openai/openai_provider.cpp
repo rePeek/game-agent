@@ -79,26 +79,26 @@ ErrorKind ClassifyTransportError(TransportError error) {
 }
 
 /// Requirements of this request that the provider cannot guarantee. A provider
-/// that cannot force tool calling or enforce a schema must say so instead of
+/// that cannot force command calling or enforce a schema must say so instead of
 /// being assumed to have done it.
 std::string CheckCapabilities(const ModelRequest& request,
                               const ProviderCapabilities& capabilities) {
   std::string problems;
 
   const bool wants_forced_choice =
-      request.tool_choice.mode == ToolChoiceMode::Required ||
-      request.tool_choice.mode == ToolChoiceMode::Specific;
-  if (wants_forced_choice && !capabilities.forced_tool_choice) {
-    problems += "forced tool_choice (" + request.tool_choice.ToString() +
+      request.command_choice.mode == CommandChoiceMode::Required ||
+      request.command_choice.mode == CommandChoiceMode::Specific;
+  if (wants_forced_choice && !capabilities.forced_command_choice) {
+    problems += "forced command_choice (" + request.command_choice.ToString() +
                 ") is not supported by this provider";
   }
 
-  for (const auto& tool : request.tools) {
-    if (tool.strict && !capabilities.strict_tool_schema) {
+  for (const auto& command : request.commands) {
+    if (command.strict && !capabilities.strict_command_schema) {
       if (!problems.empty()) {
         problems += "; ";
       }
-      problems += "strict schema for tool '" + tool.name +
+      problems += "strict schema for command '" + command.name +
                   "' cannot be enforced by this provider";
       break;
     }
@@ -193,15 +193,15 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   //    downgrade here — the SDK simply cannot verify those constraints.
   if (options_.validator) {
     const ValidationReport schemas =
-        options_.validator->ValidateToolSchemas(request);
+        options_.validator->ValidateCommandSchemas(request);
     if (!schemas.ok) {
       log(LogLevel::Warning, log_event::kValidationFailed,
-          "the request uses a tool schema that cannot be enforced: " +
+          "the request uses a command schema that cannot be enforced: " +
               schemas.Summary());
       result.status = CompletionStatus::Unsupported;
       result.error =
           MakeError(ErrorKind::Unsupported,
-                    "the request uses a tool schema that cannot be enforced: " +
+                    "the request uses a command schema that cannot be enforced: " +
                         schemas.Summary());
       return result;
     }
@@ -223,8 +223,8 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
 
   log(LogLevel::Debug, log_event::kRequestStarted,
       "model=" + request.model +
-          ", tools=" + std::to_string(request.tools.size()) +
-          ", tool_choice=" + request.tool_choice.ToString() +
+          ", commands=" + std::to_string(request.commands.size()) +
+          ", command_choice=" + request.command_choice.ToString() +
           ", messages=" + std::to_string(request.messages.size()));
 
   // 4. One completion, one (possibly retried) HTTP request.
@@ -309,7 +309,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   result.usage = parsed.usage;
   result.finish_reason = detail::MapFinishReason(parsed.finish_reason);
   result.assistant_text = parsed.assistant_text;
-  result.tool_calls = parsed.tool_calls;
+  result.command_calls = parsed.command_calls;
 
   // 6. Decide the status the caller branches on. One exit, so the completion
   //    is logged once with the status the caller actually receives.
@@ -321,7 +321,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     result.status = CompletionStatus::Truncated;
     result.error = MakeError(
         ErrorKind::InvalidRequest,
-        "completion was cut off by the token limit before the tool calls were "
+        "completion was cut off by the token limit before the command calls were "
         "complete",
         response.status);
   } else if (result.finish_reason == FinishReason::ContentFilter) {
@@ -330,24 +330,24 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
                              "completion was blocked by the provider's content "
                              "filter",
                              response.status);
-  } else if (result.tool_calls.empty()) {
-    result.status = CompletionStatus::NoToolCalls;
+  } else if (result.command_calls.empty()) {
+    result.status = CompletionStatus::NoCommandCalls;
     result.error = MakeError(
         ErrorKind::InvalidRequest,
         parsed.assistant_text.empty()
-            ? "completion contained no tool calls"
-            : "completion contained no tool calls: " + parsed.assistant_text,
+            ? "completion contained no command calls"
+            : "completion contained no command calls: " + parsed.assistant_text,
         response.status);
   } else {
-    // The batch must pass every check the SDK promises: known tools, ids,
+    // The batch must pass every check the SDK promises: known commands, ids,
     // parseable arguments and a matching parameter schema.
     const ValidationReport report =
-        options_.validator->Validate(request, result.tool_calls);
+        options_.validator->Validate(request, result.command_calls);
     if (!report.ok) {
       log(LogLevel::Warning, log_event::kValidationFailed, report.Summary());
       result.status = report.HasSchemaIssues()
                           ? CompletionStatus::Unsupported
-                          : CompletionStatus::InvalidToolCalls;
+                          : CompletionStatus::InvalidCommandCalls;
       result.error = MakeError(ErrorKind::InvalidRequest, report.Summary(),
                                response.status);
     } else {
@@ -361,7 +361,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
           ", http=" + std::to_string(response.status) +
           ", attempts=" + std::to_string(attempts_made) +
           ", tokens=" + std::to_string(result.usage.total_tokens) +
-          ", tools=" + std::to_string(result.tool_calls.size()) +
+          ", commands=" + std::to_string(result.command_calls.size()) +
           ", finish_reason=" + ToString(result.finish_reason));
   return result;
 }

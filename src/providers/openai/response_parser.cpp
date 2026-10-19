@@ -68,7 +68,7 @@ FinishReason MapFinishReason(const std::string& wire_value) {
     return FinishReason::ContentFilter;
   }
   if (wire_value == "tool_calls" || wire_value == "function_call") {
-    return FinishReason::ToolCalls;
+    return FinishReason::CommandCalls;
   }
   if (wire_value == "error") {
     return FinishReason::Error;
@@ -163,13 +163,13 @@ ParsedCompletion ParseChatCompletion(const std::string& body) {
       }
       const auto& function = wire_call["function"];
 
-      ToolCall call;
+      CommandCall call;
       call.id = wire_call.value("id", "");
       call.name = function.value("name", "");
       if (!ReadArguments(function, call.arguments_json, parsed.error)) {
         return parsed;
       }
-      parsed.tool_calls.push_back(std::move(call));
+      parsed.command_calls.push_back(std::move(call));
     }
   }
 

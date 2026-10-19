@@ -6,7 +6,11 @@
 /// built without JSON, HTTP or TLS so that it can be embedded anywhere; JSON
 /// text crosses its boundary as std::string and is parsed by the layers that
 /// actually own a JSON library (request building, response parsing and the
-/// tool-call validator).
+/// command-call validator).
+///
+/// Vocabulary: the SDK's unit of work is a *command* — a function the game
+/// registers and the model asks to run. The OpenAI wire protocol still calls
+/// these "tools"; that translation lives entirely in the provider.
 
 #include <cstdint>
 #include <string>
@@ -30,13 +34,13 @@ struct Usage {
   std::int64_t total_tokens = 0;
 };
 
-/// One tool invocation requested by the model.
+/// One command invocation requested by the model.
 ///
 /// `arguments_json` keeps the argument object exactly as the provider returned
 /// it, serialized as text: ids, order and formatting are preserved, and the
 /// core never parses it. Validation (which does parse it) happens in a layer
 /// that is allowed to depend on JSON.
-struct ToolCall {
+struct CommandCall {
   std::string id;
   std::string name;
   std::string arguments_json;
@@ -45,12 +49,13 @@ struct ToolCall {
   std::string ToString() const;
 };
 
-/// Outcome of executing a tool call, kept so the caller can feed it back as
-/// context for a later request.
-struct ToolResult {
-  std::string tool_call_id;
+/// Outcome of executing a command call, kept so the caller can feed it back as
+/// context for a later request. `content_json` is the command's own output (or
+/// the model-visible error rendering).
+struct CommandResult {
+  std::string command_call_id;
   std::string name;
-  std::string content_json;  // tool output as JSON text, usually an object
+  std::string content_json;  // command output as JSON text, usually an object
   bool is_error = false;
 };
 
@@ -60,7 +65,7 @@ enum class FinishReason {
   Stop,
   Length,
   ContentFilter,
-  ToolCalls,
+  CommandCalls,
   Error,
 };
 

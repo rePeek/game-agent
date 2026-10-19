@@ -11,15 +11,15 @@ namespace llm {
 
 /// Outcome of a single Complete() call.
 ///
-/// `Success` is reserved for a completion whose tool calls all passed the
-/// SDK's validation (tool name known, count within the request limit, valid
+/// `Success` is reserved for a completion whose command calls all passed the
+/// SDK's validation (command name known, count within the request limit, valid
 /// JSON and matching parameter schema). Any unvalidated batch must be reported
 /// as one of the other states, so callers can treat Success as "safe to
-/// execute".
+/// prepare".
 enum class CompletionStatus {
   Success,
-  NoToolCalls,
-  InvalidToolCalls,
+  NoCommandCalls,
+  InvalidCommandCalls,
   Truncated,
   Refused,
   Unsupported,
@@ -47,10 +47,10 @@ struct ModelError {
 };
 
 /// Everything one completion produced: the status a caller branches on, the
-/// validated tool calls, and the protocol data around them.
+/// validated command calls, and the protocol data around them.
 struct CompletionResult {
   CompletionStatus status = CompletionStatus::ProviderError;
-  std::vector<ToolCall> tool_calls;
+  std::vector<CommandCall> command_calls;
   Usage usage;
   std::optional<ModelError> error;
 
@@ -74,12 +74,12 @@ struct CompletionResult {
 
   bool IsSuccess() const { return status == CompletionStatus::Success; }
   explicit operator bool() const { return IsSuccess(); }
-  bool HasToolCalls() const { return !tool_calls.empty(); }
+  bool HasCommandCalls() const { return !command_calls.empty(); }
 
   /// Error message if one is set, otherwise a description of the status.
   std::string ErrorMessage() const;
 
-  /// Assistant message for the next request's context (text + tool calls).
+  /// Assistant message for the next request's context (text + command calls).
   /// Building it is the caller's decision; the SDK never appends it itself.
   Message ToAssistantMessage() const;
 };

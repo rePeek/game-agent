@@ -25,8 +25,8 @@ namespace {
 
 constexpr char kRawArguments[] = R"({"level":4})";
 
-ToolDefinition PressingTool() {
-  ToolDefinition tool;
+CommandDefinition PressingTool() {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Pressing intensity";
   tool.parameters_schema_json =
@@ -38,8 +38,8 @@ ToolDefinition PressingTool() {
 CompletionResult SuccessfulBatch() {
   CompletionResult result;
   result.status = CompletionStatus::Success;
-  result.tool_calls = {
-      ToolCall{"call_a", "set_pressing_intensity", kRawArguments}};
+  result.command_calls = {
+      CommandCall{"call_a", "set_pressing_intensity", kRawArguments}};
   result.usage = Usage{10, 5, 15};
   result.http_attempts = 1;
   result.model = "scripted-model";
@@ -103,9 +103,9 @@ ContextUpdate Update(const std::string& revision) {
   return update;
 }
 
-ToolResult ResultFor(const std::string& call_id) {
-  ToolResult result;
-  result.tool_call_id = call_id;
+CommandResult ResultFor(const std::string& call_id) {
+  CommandResult result;
+  result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
   result.content_json = R"({"applied":true})";
   return result;
@@ -114,7 +114,7 @@ ToolResult ResultFor(const std::string& call_id) {
 TEST(LlmAgentAsyncTest, SubmittingDoesNotBlockAndResolvesOnce) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-62"));
   std::future<DecisionResult> future = agent.DecideAsync();
@@ -193,12 +193,12 @@ TEST(LlmAgentAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
       ->Release();  // the gate stays open: each decision resolves on its own
 
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-62"));
   const DecisionResult first = agent.DecideAsync().get();
   ASSERT_TRUE(first.completion.IsSuccess());
-  ASSERT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
+  ASSERT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
             RecordOutcome::Recorded);
 
   agent.UpdateContext(Update("rev-70"));
@@ -252,7 +252,7 @@ TEST(LlmAgentAsyncTest, ThrowingProviderLeavesTheAgentUsable) {
 
   auto provider = std::make_shared<FlakyProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-1"));
   EXPECT_EQ(agent.DecideAsync().get().completion.status,
@@ -274,8 +274,8 @@ TEST(LlmAgentAsyncTest, TwoAgentsRunIndependentlyOnOneProvider) {
   AgentConfig away_config = DefaultConfig();
   away_config.id = "away";
   Agent away(provider, std::move(away_config));
-  home.SetTools({PressingTool()});
-  away.SetTools({PressingTool()});
+  home.SetCommands({PressingTool()});
+  away.SetCommands({PressingTool()});
 
   home.UpdateContext(Update("rev-h"));
   away.UpdateContext(Update("rev-a"));
@@ -312,7 +312,7 @@ TEST(LlmAgentAsyncTest, DisablingTheLoggerCannotBreakADecision) {
   AgentConfig config = DefaultConfig();
   config.logger = logger;
   Agent agent(provider, std::move(config));
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-62"));
   const DecisionResult decision = agent.DecideAsync().get();
@@ -320,7 +320,7 @@ TEST(LlmAgentAsyncTest, DisablingTheLoggerCannotBreakADecision) {
   ASSERT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(
-      agent.RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      agent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 1u);
 }

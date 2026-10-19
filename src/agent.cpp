@@ -72,9 +72,9 @@ struct Agent::Impl {
   std::string id;
   std::string model;
   std::string system_prompt;
-  std::vector<ToolDefinition> tools;
-  std::optional<std::int32_t> max_tokens;
-  std::optional<std::size_t> max_tool_calls;
+  std::vector<CommandDefinition> commands;
+  std::optional<std::int32_t> max_output_tokens;
+  std::optional<std::size_t> max_command_calls;
   std::shared_ptr<ILogger> logger;
 
   Context context;
@@ -87,7 +87,7 @@ struct Agent::Impl {
   /// Revision of the decision currently being asked about, if any.
   std::optional<std::string> in_flight_revision;
 
-  /// The single decision awaiting tool results, if any.
+  /// The single decision awaiting command results, if any.
   struct Pending {
     std::uint64_t decision_id = 0;
     /// Request id of the attempt that produced this decision, so recording and
@@ -95,7 +95,7 @@ struct Agent::Impl {
     std::uint64_t request_id = 0;
     std::string context_revision;
     Message assistant;
-    std::vector<std::string> tool_call_ids;  // in call order
+    std::vector<std::string> command_call_ids;  // in call order
   };
   std::vector<Pending> pending;  // at most one in this version
 
@@ -129,7 +129,7 @@ struct Agent::Impl {
   }
 
   /// The request this agent would send for the current context: the rendered
-  /// history plus this agent's system prompt, tools and model parameters.
+  /// history plus this agent's system prompt, commands and model parameters.
   ModelRequest BuildRequestLocked(std::uint64_t request_id) const {
     ModelRequest request;
     request.model = model;
@@ -142,10 +142,10 @@ struct Agent::Impl {
     request.messages.insert(request.messages.end(), rendered.messages.begin(),
                             rendered.messages.end());
 
-    request.tools = tools;
-    request.tool_choice = ToolChoice::Required();
-    request.max_tokens = max_tokens;
-    request.max_tool_calls = max_tool_calls;
+    request.commands = commands;
+    request.command_choice = CommandChoice::Required();
+    request.max_tokens = max_output_tokens;
+    request.max_command_calls = max_command_calls;
     request.log = LogContext{id, request_id};
     return request;
   }
@@ -170,8 +170,8 @@ struct Agent::Impl {
             Refused(DecisionStatus::Busy, context.context_revision(),
                     in_flight_revision.has_value()
                         ? "a decision is already in flight"
-                        : "a decision is still awaiting tool results; call "
-                          "RecordToolResults or DiscardDecision first");
+                        : "a decision is still awaiting command results; call "
+                          "RecordCommandResults or DiscardDecision first");
       } else {
         attempt.started = true;
         attempt.context_revision = context.context_revision();
@@ -187,7 +187,7 @@ struct Agent::Impl {
       EmitLog(
           log_sink, LogLevel::Debug, log_event::kDecisionStarted,
           "rev=" + attempt.context_revision +
-              ", tools=" + std::to_string(attempt.request.tools.size()) +
+              ", commands=" + std::to_string(attempt.request.commands.size()) +
               ", messages=" + std::to_string(attempt.request.messages.size()),
           attempt.request.log);
     } else {
@@ -222,8 +222,8 @@ struct Agent::Impl {
         staged.request_id = attempt.request_id;
         staged.context_revision = attempt.context_revision;
         staged.assistant = result.completion.ToAssistantMessage();
-        for (const ToolCall& call : result.completion.tool_calls) {
-          staged.tool_call_ids.push_back(call.id);
+        for (const CommandCall& call : result.completion.command_calls) {
+          staged.command_call_ids.push_back(call.id);
         }
         result.decision_id = staged.decision_id;
         pending.push_back(std::move(staged));
@@ -236,7 +236,7 @@ struct Agent::Impl {
         result.completion.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
         log_event::kDecisionCompleted,
         "status=" + ToString(result.completion.status) +
-            ", tools=" + std::to_string(result.completion.tool_calls.size()) +
+            ", commands=" + std::to_string(result.completion.command_calls.size()) +
             ", tokens=" + std::to_string(result.completion.usage.total_tokens) +
             ", attempts=" + std::to_string(result.completion.http_attempts) +
             ", decision_id=" + std::to_string(result.decision_id) +
@@ -301,8 +301,8 @@ Agent::Agent(std::shared_ptr<IModelProvider> provider, AgentConfig config)
   impl_->id = std::move(config.id);
   impl_->model = std::move(config.model);
   impl_->system_prompt = std::move(config.system_prompt);
-  impl_->max_tokens = config.max_tokens;
-  impl_->max_tool_calls = config.max_tool_calls;
+  impl_->max_output_tokens = config.max_output_tokens;
+  impl_->max_command_calls = config.max_command_calls;
   impl_->logger = std::move(config.logger);
 
   EmitLog(impl_->logger, LogLevel::Info, log_event::kSessionCreated,
@@ -329,9 +329,9 @@ void Agent::SetSystemPrompt(std::string prompt) {
   impl_->system_prompt = std::move(prompt);
 }
 
-void Agent::SetTools(std::vector<ToolDefinition> tools) {
+void Agent::SetCommands(std::vector<CommandDefinition> commands) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->tools = std::move(tools);
+  impl_->commands = std::move(commands);
 }
 
 void Agent::SetModel(std::string model) {
@@ -344,9 +344,9 @@ std::string Agent::model() const {
   return impl_->model;
 }
 
-std::vector<ToolDefinition> Agent::tools() const {
+std::vector<CommandDefinition> Agent::commands() const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  return impl_->tools;
+  return impl_->commands;
 }
 
 void Agent::UpdateContext(ContextUpdate update) {
@@ -427,8 +427,8 @@ std::future<DecisionResult> Agent::DecideAsync() {
   return future;
 }
 
-RecordOutcome Agent::RecordToolResults(std::uint64_t decision_id,
-                                       std::vector<ToolResult> results) {
+RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
+                                       std::vector<CommandResult> results) {
   std::unique_lock<std::mutex> lock(impl_->mutex);
   const std::shared_ptr<ILogger> logger = impl_->logger;
   const std::string id = impl_->id;
@@ -455,28 +455,28 @@ RecordOutcome Agent::RecordToolResults(std::uint64_t decision_id,
   }
   request_id = pending->request_id;
 
-  // Every tool call needs exactly one result, and nothing else: a decision is
+  // Every command call needs exactly one result, and nothing else: a decision is
   // recorded as a whole or not at all.
-  std::vector<Message> tool_messages;
-  tool_messages.reserve(pending->tool_call_ids.size());
-  for (const std::string& call_id : pending->tool_call_ids) {
-    const ToolResult* match = nullptr;
+  std::vector<Message> result_messages;
+  result_messages.reserve(pending->command_call_ids.size());
+  for (const std::string& call_id : pending->command_call_ids) {
+    const CommandResult* match = nullptr;
     std::size_t matches = 0;
-    for (const ToolResult& candidate : results) {
-      if (candidate.tool_call_id == call_id) {
+    for (const CommandResult& candidate : results) {
+      if (candidate.command_call_id == call_id) {
         match = &candidate;
         ++matches;
       }
     }
     if (matches != 1) {
-      reject("results do not cover every tool call exactly once");
+      reject("results do not cover every command call exactly once");
       return RecordOutcome::IncompleteResults;
     }
-    tool_messages.push_back(Message::ToolResult(*match));
+    result_messages.push_back(Message::CommandResultMessage(*match));
   }
-  if (results.size() != pending->tool_call_ids.size()) {
+  if (results.size() != pending->command_call_ids.size()) {
     // Extra results, or results for a call that was never made.
-    reject("results do not cover every tool call exactly once");
+    reject("results do not cover every command call exactly once");
     return RecordOutcome::IncompleteResults;
   }
 
@@ -485,7 +485,7 @@ RecordOutcome Agent::RecordToolResults(std::uint64_t decision_id,
   record.context_revision = pending->context_revision;
   const std::string record_revision = pending->context_revision;
   record.assistant = pending->assistant;
-  record.tool_results = std::move(tool_messages);
+  record.command_results = std::move(result_messages);
   impl_->context.AppendDecision(std::move(record));
   impl_->pending.erase(
       std::remove_if(impl_->pending.begin(), impl_->pending.end(),

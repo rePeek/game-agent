@@ -490,9 +490,9 @@ void ValidateAgainstSchema(const Json& schema,
 }  // namespace
 
 std::string ValidationIssue::ToString() const {
-  std::string where = "tool call #" + std::to_string(index);
-  if (!tool_name.empty()) {
-    where += " (" + tool_name + ")";
+  std::string where = "command call #" + std::to_string(index);
+  if (!command_name.empty()) {
+    where += " (" + command_name + ")";
   }
   return where + ": " + message;
 }
@@ -517,11 +517,11 @@ std::string ValidationReport::Summary() const {
   return summary;
 }
 
-JsonSchemaToolCallValidator::JsonSchemaToolCallValidator(
+JsonSchemaCommandValidator::JsonSchemaCommandValidator(
     ValidationLimits limits)
     : limits_(std::move(limits)) {}
 
-ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
+ValidationReport JsonSchemaCommandValidator::ValidateCommandSchemas(
     const ModelRequest& request) const {
   ValidationReport report;
   if (!limits_.validate_schema) {
@@ -530,40 +530,40 @@ ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
   }
 
   std::vector<std::string> seen_names;
-  for (const auto& tool : request.tools) {
+  for (const auto& command : request.commands) {
     bool duplicate_name = false;
     for (const std::string& seen : seen_names) {
-      if (!tool.name.empty() && seen == tool.name) {
+      if (!command.name.empty() && seen == command.name) {
         duplicate_name = true;
         break;
       }
     }
-    if (!tool.name.empty()) {
-      seen_names.push_back(tool.name);
+    if (!command.name.empty()) {
+      seen_names.push_back(command.name);
     }
     if (duplicate_name) {
       ValidationIssue issue;
-      issue.tool_name = tool.name;
+      issue.command_name = command.name;
       issue.kind = ValidationIssueKind::Schema;
       issue.message = "is offered more than once in this request";
       report.issues.push_back(std::move(issue));
       continue;
     }
     const Json schema =
-        Json::parse(tool.parameters_schema_json, nullptr, false);
+        Json::parse(command.parameters_schema_json, nullptr, false);
     if (schema.is_discarded()) {
       ValidationIssue issue;
-      issue.tool_name = tool.name;
+      issue.command_name = command.name;
       issue.kind = ValidationIssueKind::Schema;
-      issue.message = "the tool's parameters schema is not valid JSON";
+      issue.message = "the command's parameters schema is not valid JSON";
       report.issues.push_back(std::move(issue));
       continue;
     }
     if (!schema.is_object()) {
       ValidationIssue issue;
-      issue.tool_name = tool.name;
+      issue.command_name = command.name;
       issue.kind = ValidationIssueKind::Schema;
-      issue.message = "the tool's parameters schema must be a JSON object";
+      issue.message = "the command's parameters schema must be a JSON object";
       report.issues.push_back(std::move(issue));
       continue;
     }
@@ -572,7 +572,7 @@ ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
     CheckSchemaSupported(schema, "", problems, 0);
     for (auto& problem : problems) {
       ValidationIssue issue;
-      issue.tool_name = tool.name;
+      issue.command_name = command.name;
       issue.kind = ValidationIssueKind::Schema;
       std::string message = std::move(problem.message);
       if (!message.empty() && message.front() == '.') {
@@ -587,32 +587,32 @@ ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
   return report;
 }
 
-ValidationReport JsonSchemaToolCallValidator::Validate(
+ValidationReport JsonSchemaCommandValidator::Validate(
     const ModelRequest& request,
-    const std::vector<ToolCall>& tool_calls) const {
+    const std::vector<CommandCall>& command_calls) const {
   ValidationReport report;
 
-  const std::size_t effective_max = limits_.max_tool_calls.has_value()
-                                        ? limits_.max_tool_calls.value()
-                                        : request.max_tool_calls.value_or(0);
+  const std::size_t effective_max = limits_.max_command_calls.has_value()
+                                        ? limits_.max_command_calls.value()
+                                        : request.max_command_calls.value_or(0);
 
-  if (tool_calls.size() < limits_.min_tool_calls) {
+  if (command_calls.size() < limits_.min_command_calls) {
     ValidationIssue issue;
     issue.message = "expected at least " +
-                    std::to_string(limits_.min_tool_calls) +
-                    " tool call(s), got " + std::to_string(tool_calls.size());
+                    std::to_string(limits_.min_command_calls) +
+                    " command call(s), got " + std::to_string(command_calls.size());
     report.issues.push_back(std::move(issue));
   }
-  if (effective_max > 0 && tool_calls.size() > effective_max) {
+  if (effective_max > 0 && command_calls.size() > effective_max) {
     ValidationIssue issue;
     issue.message = "expected at most " + std::to_string(effective_max) +
-                    " tool call(s), got " + std::to_string(tool_calls.size());
+                    " command call(s), got " + std::to_string(command_calls.size());
     report.issues.push_back(std::move(issue));
   }
 
   std::vector<std::string> seen_ids;
-  for (std::size_t i = 0; i < tool_calls.size(); ++i) {
-    const ToolCall& call = tool_calls[i];
+  for (std::size_t i = 0; i < command_calls.size(); ++i) {
+    const CommandCall& call = command_calls[i];
     const std::size_t index = i;
     const std::string name = call.name;
 
@@ -620,7 +620,7 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
                                              std::string message) {
       ValidationIssue issue;
       issue.index = index;
-      issue.tool_name = name;
+      issue.command_name = name;
       issue.kind = kind;
       issue.message = std::move(message);
       report.issues.push_back(std::move(issue));
@@ -634,7 +634,7 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
       for (const auto& seen : seen_ids) {
         if (seen == call.id) {
           add_issue(ValidationIssueKind::Arguments,
-                    "reuses tool call id '" + call.id +
+                    "reuses command call id '" + call.id +
                         "', so the results could not be told apart");
           break;
         }
@@ -642,15 +642,15 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
       seen_ids.push_back(call.id);
     }
     if (call.name.empty()) {
-      add_issue(ValidationIssueKind::Arguments, "has no tool name");
+      add_issue(ValidationIssueKind::Arguments, "has no command name");
       continue;
     }
 
-    const ToolDefinition* tool =
-        limits_.require_known_tools ? request.FindTool(call.name) : nullptr;
-    if (limits_.require_known_tools && tool == nullptr) {
+    const CommandDefinition* command =
+        limits_.require_known_commands ? request.FindCommand(call.name) : nullptr;
+    if (limits_.require_known_commands && command == nullptr) {
       add_issue(ValidationIssueKind::Arguments,
-                "is not one of the tools offered in this request");
+                "is not one of the commands offered in this request");
       continue;
     }
 
@@ -666,14 +666,14 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
       continue;
     }
 
-    if (!limits_.validate_schema || tool == nullptr) {
+    if (!limits_.validate_schema || command == nullptr) {
       continue;
     }
     const Json schema =
-        Json::parse(tool->parameters_schema_json, nullptr, false);
+        Json::parse(command->parameters_schema_json, nullptr, false);
     if (schema.is_discarded()) {
       add_issue(ValidationIssueKind::Schema,
-                "the tool's parameters schema is not valid JSON");
+                "the command's parameters schema is not valid JSON");
       continue;
     }
     Problems problems;
@@ -694,9 +694,9 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
   return report;
 }
 
-std::shared_ptr<const ToolCallValidator> DefaultValidator() {
+std::shared_ptr<const CommandValidator> DefaultValidator() {
   static const auto validator =
-      std::make_shared<const JsonSchemaToolCallValidator>();
+      std::make_shared<const JsonSchemaCommandValidator>();
   return validator;
 }
 

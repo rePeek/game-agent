@@ -22,8 +22,8 @@ namespace {
 
 constexpr char kPromptText[] = "Opponent presses high down our left side.";
 
-ToolDefinition PressingTool() {
-  ToolDefinition tool;
+CommandDefinition PressingTool() {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "pressing";
   tool.parameters_schema_json =
@@ -32,7 +32,7 @@ ToolDefinition PressingTool() {
   return tool;
 }
 
-std::string ToolCallResponse(const std::string& arguments = R"({"level":4})") {
+std::string CommandCallResponse(const std::string& arguments = R"({"level":4})") {
   const nlohmann::json body{
       {"model", "gpt-5.6"},
       {"choices",
@@ -91,7 +91,7 @@ ModelRequest MakeRequest() {
   request.model = models::kGpt56;
   request.messages = {Message::System("You are a head coach."),
                       Message::User(kPromptText)};
-  request.tools = {PressingTool()};
+  request.commands = {PressingTool()};
   request.log.session_id = "home";
   request.log.request_id = 7;
   return request;
@@ -120,7 +120,7 @@ struct Fixture {
 TEST(LlmOpenAILoggingTest, StartedAndCompletedShareTheRequestContext) {
   Fixture fixture;
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse()));
+      ScriptedTransport::Ok(CommandCallResponse()));
 
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
@@ -131,7 +131,7 @@ TEST(LlmOpenAILoggingTest, StartedAndCompletedShareTheRequestContext) {
   EXPECT_EQ(records[0].event, log_event::kRequestStarted);
   EXPECT_EQ(records[0].level, LogLevel::Debug);
   EXPECT_NE(records[0].message.find("model=gpt-5.6"), std::string::npos);
-  EXPECT_NE(records[0].message.find("tool_choice=required"), std::string::npos);
+  EXPECT_NE(records[0].message.find("command_choice=required"), std::string::npos);
 
   EXPECT_EQ(records[1].event, log_event::kRequestCompleted);
   EXPECT_EQ(records[1].level, LogLevel::Info);
@@ -139,7 +139,7 @@ TEST(LlmOpenAILoggingTest, StartedAndCompletedShareTheRequestContext) {
   EXPECT_NE(records[1].message.find("http=200"), std::string::npos);
   EXPECT_NE(records[1].message.find("attempts=1"), std::string::npos);
   EXPECT_NE(records[1].message.find("tokens=15"), std::string::npos);
-  EXPECT_NE(records[1].message.find("tools=1"), std::string::npos);
+  EXPECT_NE(records[1].message.find("commands=1"), std::string::npos);
 
   for (const LogRecord& record : records) {
     EXPECT_EQ(record.session_id, "home")
@@ -153,7 +153,7 @@ TEST(LlmOpenAILoggingTest, RetriesAreVisible) {
   fixture.transport->responses.push_back(
       ScriptedTransport::Status(429, R"({"error":{"message":"slow down"}})"));
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse()));
+      ScriptedTransport::Ok(CommandCallResponse()));
 
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
@@ -218,12 +218,12 @@ TEST(LlmOpenAILoggingTest, ValidationFailuresAreLogged) {
   Fixture fixture;
   // level is outside the schema range.
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse(R"({"level":9})")));
+      ScriptedTransport::Ok(CommandCallResponse(R"({"level":9})")));
 
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
 
-  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
   const std::vector<std::string> failures =
       fixture.logger->Messages(log_event::kValidationFailed);
   ASSERT_EQ(failures.size(), 1u);
@@ -233,13 +233,13 @@ TEST(LlmOpenAILoggingTest, ValidationFailuresAreLogged) {
   const std::vector<std::string> completed =
       fixture.logger->Messages(log_event::kRequestCompleted);
   ASSERT_EQ(completed.size(), 1u);
-  EXPECT_NE(completed[0].find("status=invalid tool calls"), std::string::npos);
+  EXPECT_NE(completed[0].find("status=invalid command calls"), std::string::npos);
 }
 
 TEST(LlmOpenAILoggingTest, UnenforceableSchemaIsLoggedBeforeSending) {
   Fixture fixture;
   ModelRequest request = MakeRequest();
-  request.tools[0].parameters_schema_json =
+  request.commands[0].parameters_schema_json =
       R"({"type":"object","properties":{"level":{"type":"integer","pattern":"[0-5]"}}})";
 
   const CompletionResult result = fixture.Complete(request, fixture.Options());
@@ -254,10 +254,10 @@ TEST(LlmOpenAILoggingTest, UnenforceableSchemaIsLoggedBeforeSending) {
 TEST(LlmOpenAILoggingTest, DowngradeIsReportedAsAWarning) {
   Fixture fixture;
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse()));
+      ScriptedTransport::Ok(CommandCallResponse()));
 
   ProviderOptions options = fixture.Options();
-  options.capabilities.strict_tool_schema = false;
+  options.capabilities.strict_command_schema = false;
   options.allow_validation_downgrade = true;
 
   const CompletionResult result =
@@ -289,7 +289,7 @@ TEST(LlmOpenAILoggingTest, ProviderTextNeverEntersTheLog) {
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
 
-  ASSERT_EQ(result.status, CompletionStatus::NoToolCalls);
+  ASSERT_EQ(result.status, CompletionStatus::NoCommandCalls);
   EXPECT_NE(result.ErrorMessage().find("I would rather talk."),
             std::string::npos)
       << "the caller still gets the detail in the result";
@@ -298,7 +298,7 @@ TEST(LlmOpenAILoggingTest, ProviderTextNeverEntersTheLog) {
         << "model text must not reach the log: " << record.message;
   }
   EXPECT_NE(fixture.logger->Messages(log_event::kRequestCompleted)[0].find(
-                "status=no tool calls"),
+                "status=no command calls"),
             std::string::npos)
       << "the status is the classification the log carries";
 }
@@ -306,7 +306,7 @@ TEST(LlmOpenAILoggingTest, ProviderTextNeverEntersTheLog) {
 TEST(LlmOpenAILoggingTest, OnlyMetadataIsLogged) {
   Fixture fixture;
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse()));
+      ScriptedTransport::Ok(CommandCallResponse()));
 
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
@@ -327,7 +327,7 @@ TEST(LlmOpenAILoggingTest, OnlyMetadataIsLogged) {
 TEST(LlmOpenAILoggingTest, NoLoggerMeansNoEvents) {
   Fixture fixture;
   fixture.transport->responses.push_back(
-      ScriptedTransport::Ok(ToolCallResponse()));
+      ScriptedTransport::Ok(CommandCallResponse()));
 
   ProviderOptions options = fixture.Options();
   options.logger = nullptr;

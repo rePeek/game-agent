@@ -63,10 +63,10 @@ ParameterDialect DialectForModel(const std::string& model);
 /// must not be credited with enforcing them.
 constexpr ProviderCapabilities DefaultCapabilities() {
   ProviderCapabilities capabilities;
-  capabilities.multiple_tool_calls = true;
-  capabilities.forced_tool_choice = true;
-  capabilities.strict_tool_schema = true;
-  capabilities.tool_result_history = true;
+  capabilities.multiple_command_calls = true;
+  capabilities.forced_command_choice = true;
+  capabilities.strict_command_schema = true;
+  capabilities.command_result_history = true;
   return capabilities;
 }
 
@@ -96,7 +96,7 @@ struct ProviderOptions {
   /// Defaults to the JSON-Schema validator. Injecting one lets an application
   /// add its own policy (for example a per-game allowed tool list) without
   /// touching the provider.
-  std::shared_ptr<const ToolCallValidator> validator;
+  std::shared_ptr<const CommandValidator> validator;
 
   /// Optional diagnostics sink; the same logger can be shared with the
   /// sessions using this provider. Without it the provider stays silent.

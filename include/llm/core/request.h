@@ -12,34 +12,34 @@
 
 namespace llm {
 
-/// How the provider should pick tools for a request.
-enum class ToolChoiceMode {
-  Auto,      // the model decides whether to call a tool
-  Required,  // the model must call at least one tool
-  None,      // tools are not offered for this request
-  Specific,  // the model must call `tool_name`
+/// How the provider should pick commands for a request.
+enum class CommandChoiceMode {
+  Auto,      // the model decides whether to call a command
+  Required,  // the model must call at least one command
+  None,      // commands are not offered for this request
+  Specific,  // the model must call `command_name`
 };
 
-struct ToolChoice {
-  ToolChoiceMode mode = ToolChoiceMode::Required;
-  std::string tool_name;  // only meaningful for ToolChoiceMode::Specific
+struct CommandChoice {
+  CommandChoiceMode mode = CommandChoiceMode::Required;
+  std::string command_name;  // only meaningful for CommandChoiceMode::Specific
 
-  static ToolChoice Auto();
-  static ToolChoice Required();
-  static ToolChoice None();
-  static ToolChoice Specific(std::string tool_name);
+  static CommandChoice Auto();
+  static CommandChoice Required();
+  static CommandChoice None();
+  static CommandChoice Specific(std::string command_name);
 
-  /// Provider-independent label: "auto", "required", "none" or the tool name.
+  /// Provider-independent label: "auto", "required", "none" or the name.
   std::string ToString() const;
 };
 
-/// A tool the model may call.
+/// A command the model may call.
 ///
 /// `parameters_schema_json` is a JSON Schema object serialized as text, so the
-/// core does not need a JSON library to carry it. `strict` asks the provider
-/// to enforce that schema itself; providers that cannot must report it through
+/// core does not need a JSON library to carry it. `strict` asks the provider to
+/// enforce that schema itself; providers that cannot must report it through
 /// ProviderCapabilities instead of pretending the schema is enforced.
-struct ToolDefinition {
+struct CommandDefinition {
   std::string name;
   std::string description;
   std::string parameters_schema_json;
@@ -48,31 +48,31 @@ struct ToolDefinition {
   bool IsValid() const { return !name.empty(); }
 };
 
-/// One completion request: the caller's context plus the tools it may use.
+/// One completion request: the caller's context plus the commands it may use.
 struct ModelRequest {
   std::string model;
   std::vector<Message> messages;
-  std::vector<ToolDefinition> tools;
+  std::vector<CommandDefinition> commands;
 
-  /// Forced tool calling is the SDK's contract, so `required` is the default;
-  /// callers that also accept plain answers set ToolChoice::Auto().
-  ToolChoice tool_choice = ToolChoice::Required();
+  /// Forced command calling is the SDK's contract, so `required` is the
+  /// default; callers that also accept plain answers set CommandChoice::Auto().
+  CommandChoice command_choice = CommandChoice::Required();
 
   std::optional<std::int32_t> max_tokens;
   std::optional<double> temperature;
   std::optional<double> top_p;
   std::optional<std::int64_t> seed;
 
-  /// Upper bound on the number of tool calls a single completion may return.
+  /// Upper bound on the number of command calls a single completion may return.
   /// Enforced by the SDK validator, not by the provider.
-  std::optional<std::size_t> max_tool_calls;
+  std::optional<std::size_t> max_command_calls;
 
-  /// Diagnostics only: lets a provider attribute its log events to the session
+  /// Diagnostics only: lets a provider attribute its log events to the agent
   /// and decision that caused them. Request builders ignore it.
   LogContext log;
 
-  bool HasTools() const { return !tools.empty(); }
-  const ToolDefinition* FindTool(const std::string& name) const;
+  bool HasCommands() const { return !commands.empty(); }
+  const CommandDefinition* FindCommand(const std::string& name) const;
 };
 
 }  // namespace llm

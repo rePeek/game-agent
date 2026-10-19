@@ -57,8 +57,8 @@ class FakeTransport : public ITransport {
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-ToolDefinition PressingTool(bool strict = true) {
-  ToolDefinition tool;
+CommandDefinition PressingTool(bool strict = true) {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Raise or lower the pressing intensity";
   tool.parameters_schema_json =
@@ -67,8 +67,8 @@ ToolDefinition PressingTool(bool strict = true) {
   return tool;
 }
 
-ToolDefinition DefensiveLineTool(bool strict = true) {
-  ToolDefinition tool;
+CommandDefinition DefensiveLineTool(bool strict = true) {
+  CommandDefinition tool;
   tool.name = "set_defensive_line";
   tool.description = "Move the defensive line";
   tool.parameters_schema_json =
@@ -77,10 +77,10 @@ ToolDefinition DefensiveLineTool(bool strict = true) {
   return tool;
 }
 
-std::vector<ToolCall> TwoToolCalls() {
+std::vector<CommandCall> TwoCommandCalls() {
   return {
-      ToolCall{"call_001", "set_pressing_intensity", kRawFirstArguments},
-      ToolCall{"call_002", "set_defensive_line", kRawSecondArguments},
+      CommandCall{"call_001", "set_pressing_intensity", kRawFirstArguments},
+      CommandCall{"call_002", "set_defensive_line", kRawSecondArguments},
   };
 }
 
@@ -89,7 +89,7 @@ ModelRequest MakeRequest() {
   request.model = models::kGpt56;
   request.messages = {Message::System("You are a coach."),
                       Message::User("Opponent is pressing high.")};
-  request.tools = {PressingTool(), DefensiveLineTool()};
+  request.commands = {PressingTool(), DefensiveLineTool()};
   request.max_tokens = 200;
   return request;
 }
@@ -111,7 +111,7 @@ std::string MakeResponse(const nlohmann::json& message,
   return body.dump();
 }
 
-nlohmann::json ToolCallsMessage(
+nlohmann::json CommandCallsMessage(
     const std::vector<std::pair<std::string, std::string>>& calls) {
   nlohmann::json array = nlohmann::json::array();
   for (const auto& [id, name] : calls) {
@@ -128,7 +128,7 @@ nlohmann::json ToolCallsMessage(
 // Message with the two-call batch, arguments as sent by a conforming server.
 nlohmann::json TwoCallsMessage() {
   nlohmann::json message =
-      ToolCallsMessage({{"call_001", "set_pressing_intensity"},
+      CommandCallsMessage({{"call_001", "set_pressing_intensity"},
                         {"call_002", "set_defensive_line"}});
   message["tool_calls"][0]["function"]["arguments"] = kRawFirstArguments;
   message["tool_calls"][1]["function"]["arguments"] = kRawSecondArguments;
@@ -155,7 +155,7 @@ struct Fixture {
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
-TEST(LlmOpenAIBuilderTest, BuildsToolsAndRequiredToolChoice) {
+TEST(LlmOpenAIBuilderTest, BuildsToolsAndRequiredCommandChoice) {
   const ModelRequest request = MakeRequest();
 
   const detail::BuildOutcome built =
@@ -186,18 +186,18 @@ TEST(LlmOpenAIBuilderTest, BuildsToolsAndRequiredToolChoice) {
   EXPECT_TRUE(tool["function"]["parameters"]["properties"].contains("level"));
 }
 
-TEST(LlmOpenAIBuilderTest, ToolChoiceVariants) {
+TEST(LlmOpenAIBuilderTest, CommandChoiceVariants) {
   ModelRequest request = MakeRequest();
 
-  request.tool_choice = ToolChoice::Auto();
+  request.command_choice = CommandChoice::Auto();
   EXPECT_EQ(detail::BuildChatCompletionRequest(request).body["tool_choice"],
             "auto");
 
-  request.tool_choice = ToolChoice::None();
+  request.command_choice = CommandChoice::None();
   EXPECT_EQ(detail::BuildChatCompletionRequest(request).body["tool_choice"],
             "none");
 
-  request.tool_choice = ToolChoice::Specific("set_pressing_intensity");
+  request.command_choice = CommandChoice::Specific("set_pressing_intensity");
   const nlohmann::json specific =
       detail::BuildChatCompletionRequest(request).body["tool_choice"];
   EXPECT_EQ(specific["type"], "function");
@@ -206,7 +206,7 @@ TEST(LlmOpenAIBuilderTest, ToolChoiceVariants) {
 
 TEST(LlmOpenAIBuilderTest, StrictIsOmittedWhenNotRequested) {
   ModelRequest request = MakeRequest();
-  request.tools = {PressingTool(/*strict=*/false)};
+  request.commands = {PressingTool(/*strict=*/false)};
 
   const detail::BuildOutcome built =
       detail::BuildChatCompletionRequest(request);
@@ -218,13 +218,13 @@ TEST(LlmOpenAIBuilderTest, StrictIsOmittedWhenNotRequested) {
 // The round trip the SDK exists for: a previous decision (assistant tool calls
 // plus their results) must serialize back into an OpenAI-compatible context.
 TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
-  ToolResult applied;
-  applied.tool_call_id = "call_001";
+  CommandResult applied;
+  applied.command_call_id = "call_001";
   applied.name = "set_pressing_intensity";
   applied.content_json = R"({"applied":true})";
 
-  ToolResult applied_second;
-  applied_second.tool_call_id = "call_002";
+  CommandResult applied_second;
+  applied_second.command_call_id = "call_002";
   applied_second.name = "set_defensive_line";
   applied_second.content_json = R"({"applied":true})";
 
@@ -233,12 +233,12 @@ TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
   request.messages = {
       Message::System("You are a coach."),
       Message::User("Opponent is pressing high."),
-      Message::AssistantToolCalls(TwoToolCalls()),
-      Message::ToolResult(applied),
-      Message::ToolResult(applied_second),
+      Message::AssistantCommandCalls(TwoCommandCalls()),
+      Message::CommandResultMessage(applied),
+      Message::CommandResultMessage(applied_second),
       Message::User("They switched to a low block."),
   };
-  request.tools = {PressingTool()};
+  request.commands = {PressingTool()};
 
   const detail::BuildOutcome built =
       detail::BuildChatCompletionRequest(request);
@@ -304,26 +304,26 @@ TEST(LlmOpenAIBuilderTest, RejectsInvalidRequests) {
   EXPECT_FALSE(detail::BuildChatCompletionRequest(request).ok);
 
   request = MakeRequest();
-  request.tools = {PressingTool()};
-  request.tools[0].parameters_schema_json = "{not json";
+  request.commands = {PressingTool()};
+  request.commands[0].parameters_schema_json = "{not json";
   const detail::BuildOutcome broken =
       detail::BuildChatCompletionRequest(request);
   EXPECT_FALSE(broken.ok);
   EXPECT_NE(broken.error.find("not valid JSON"), std::string::npos);
 
   request = MakeRequest();
-  request.tools[0].name.clear();
+  request.commands[0].name.clear();
   EXPECT_FALSE(detail::BuildChatCompletionRequest(request).ok);
 
   request = MakeRequest();
-  request.tool_choice = ToolChoice::Specific("");
+  request.command_choice = CommandChoice::Specific("");
   EXPECT_FALSE(detail::BuildChatCompletionRequest(request).ok);
 }
 
 // ---------------------------------------------------------------------------
 // Response parsing
 // ---------------------------------------------------------------------------
-TEST(LlmOpenAIParserTest, KeepsEveryToolCallInOrderWithRawArguments) {
+TEST(LlmOpenAIParserTest, KeepsEveryCommandCallInOrderWithRawArguments) {
   const detail::ParsedCompletion parsed =
       detail::ParseChatCompletion(MakeResponse(TwoCallsMessage()));
 
@@ -333,12 +333,12 @@ TEST(LlmOpenAIParserTest, KeepsEveryToolCallInOrderWithRawArguments) {
   EXPECT_EQ(parsed.usage.prompt_tokens, 11);
   EXPECT_EQ(parsed.usage.completion_tokens, 7);
   EXPECT_EQ(parsed.usage.total_tokens, 18);
-  ASSERT_EQ(parsed.tool_calls.size(), 2u);
-  EXPECT_EQ(parsed.tool_calls[0].id, "call_001");
-  EXPECT_EQ(parsed.tool_calls[0].name, "set_pressing_intensity");
-  EXPECT_EQ(parsed.tool_calls[0].arguments_json, kRawFirstArguments);
-  EXPECT_EQ(parsed.tool_calls[1].id, "call_002");
-  EXPECT_EQ(parsed.tool_calls[1].arguments_json, kRawSecondArguments);
+  ASSERT_EQ(parsed.command_calls.size(), 2u);
+  EXPECT_EQ(parsed.command_calls[0].id, "call_001");
+  EXPECT_EQ(parsed.command_calls[0].name, "set_pressing_intensity");
+  EXPECT_EQ(parsed.command_calls[0].arguments_json, kRawFirstArguments);
+  EXPECT_EQ(parsed.command_calls[1].id, "call_002");
+  EXPECT_EQ(parsed.command_calls[1].arguments_json, kRawSecondArguments);
 }
 
 TEST(LlmOpenAIParserTest, AcceptsObjectArgumentsFromCompatibleServers) {
@@ -350,8 +350,8 @@ TEST(LlmOpenAIParserTest, AcceptsObjectArgumentsFromCompatibleServers) {
       detail::ParseChatCompletion(MakeResponse(message));
 
   ASSERT_TRUE(parsed.ok) << parsed.error;
-  ASSERT_EQ(parsed.tool_calls.size(), 2u);
-  EXPECT_EQ(parsed.tool_calls[0].arguments_json, R"({"level":3})");
+  ASSERT_EQ(parsed.command_calls.size(), 2u);
+  EXPECT_EQ(parsed.command_calls[0].arguments_json, R"({"level":3})");
 }
 
 TEST(LlmOpenAIParserTest, ReadsTextAndRefusal) {
@@ -359,7 +359,7 @@ TEST(LlmOpenAIParserTest, ReadsTextAndRefusal) {
       MakeResponse({{"role", "assistant"}, {"content", "2 + 2 is 4"}}, "stop"));
   ASSERT_TRUE(text.ok) << text.error;
   EXPECT_EQ(text.assistant_text, "2 + 2 is 4");
-  EXPECT_TRUE(text.tool_calls.empty());
+  EXPECT_TRUE(text.command_calls.empty());
   EXPECT_TRUE(text.refusal.empty());
 
   const detail::ParsedCompletion refused = detail::ParseChatCompletion(
@@ -381,12 +381,12 @@ TEST(LlmOpenAIParserTest, ReportsUnreadableBodies) {
 
 TEST(LlmOpenAIParserTest, EmptyMessageIsNotAParseError) {
   // A completion may carry neither text nor tool calls; the provider reports
-  // that as NoToolCalls rather than as a broken response.
+  // that as NoCommandCalls rather than as a broken response.
   const detail::ParsedCompletion parsed =
       detail::ParseChatCompletion(R"({"choices":[{"message":{}}]})");
   ASSERT_TRUE(parsed.ok) << parsed.error;
   EXPECT_TRUE(parsed.assistant_text.empty());
-  EXPECT_TRUE(parsed.tool_calls.empty());
+  EXPECT_TRUE(parsed.command_calls.empty());
 }
 
 TEST(LlmOpenAIParserTest, ExtractsProviderErrorMessages) {
@@ -399,7 +399,7 @@ TEST(LlmOpenAIParserTest, ExtractsProviderErrorMessages) {
 
 TEST(LlmOpenAIParserTest, MapsFinishReasons) {
   EXPECT_EQ(detail::MapFinishReason("stop"), FinishReason::Stop);
-  EXPECT_EQ(detail::MapFinishReason("tool_calls"), FinishReason::ToolCalls);
+  EXPECT_EQ(detail::MapFinishReason("tool_calls"), FinishReason::CommandCalls);
   EXPECT_EQ(detail::MapFinishReason("length"), FinishReason::Length);
   EXPECT_EQ(detail::MapFinishReason("content_filter"),
             FinishReason::ContentFilter);
@@ -420,9 +420,9 @@ TEST(LlmOpenAIProviderTest, SuccessForAValidatedBatch) {
   ASSERT_TRUE(result.IsSuccess()) << result.ErrorMessage();
   EXPECT_EQ(result.status, CompletionStatus::Success);
   EXPECT_FALSE(result.error.has_value());
-  EXPECT_EQ(result.tool_calls.size(), 2u);
+  EXPECT_EQ(result.command_calls.size(), 2u);
   EXPECT_EQ(result.model, "gpt-5.6-2026-01-01");
-  EXPECT_EQ(result.finish_reason, FinishReason::ToolCalls);
+  EXPECT_EQ(result.finish_reason, FinishReason::CommandCalls);
   EXPECT_EQ(result.usage.total_tokens, 18);
   EXPECT_FALSE(result.provider_metadata.empty());
 
@@ -462,10 +462,10 @@ TEST(LlmOpenAIProviderTest, TextOnlyAnswerIsNotSuccess) {
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
 
-  EXPECT_EQ(result.status, CompletionStatus::NoToolCalls);
+  EXPECT_EQ(result.status, CompletionStatus::NoCommandCalls);
   EXPECT_FALSE(result.IsSuccess());
   EXPECT_EQ(result.assistant_text, "I'd rather talk.");
-  EXPECT_TRUE(result.tool_calls.empty());
+  EXPECT_TRUE(result.command_calls.empty());
 }
 
 TEST(LlmOpenAIProviderTest, TokenLimitIsTruncation) {
@@ -577,7 +577,7 @@ TEST(LlmOpenAIProviderTest, MissingApiKeyNeverReachesTheTransport) {
 TEST(LlmOpenAIProviderTest, InvalidRequestNeverReachesTheTransport) {
   Fixture fixture;
   ModelRequest request = MakeRequest();
-  request.tools[0].parameters_schema_json = "{oops";
+  request.commands[0].parameters_schema_json = "{oops";
 
   const CompletionResult result = fixture.Complete(request, fixture.Options());
 
@@ -596,7 +596,7 @@ TEST(LlmOpenAIProviderTest, MalformedBatchIsNotSuccess) {
     fixture.transport->responses.push_back(
         FakeTransport::Ok(MakeResponse(message)));
     EXPECT_EQ(fixture.Complete(MakeRequest(), fixture.Options()).status,
-              CompletionStatus::InvalidToolCalls);
+              CompletionStatus::InvalidCommandCalls);
   }
   // Missing id: the batch could not be answered with tool results.
   {
@@ -606,7 +606,7 @@ TEST(LlmOpenAIProviderTest, MalformedBatchIsNotSuccess) {
     fixture.transport->responses.push_back(
         FakeTransport::Ok(MakeResponse(message)));
     EXPECT_EQ(fixture.Complete(MakeRequest(), fixture.Options()).status,
-              CompletionStatus::InvalidToolCalls);
+              CompletionStatus::InvalidCommandCalls);
   }
   // Arguments that are not JSON.
   {
@@ -616,7 +616,7 @@ TEST(LlmOpenAIProviderTest, MalformedBatchIsNotSuccess) {
     fixture.transport->responses.push_back(
         FakeTransport::Ok(MakeResponse(message)));
     EXPECT_EQ(fixture.Complete(MakeRequest(), fixture.Options()).status,
-              CompletionStatus::InvalidToolCalls);
+              CompletionStatus::InvalidCommandCalls);
   }
   // More calls than the request allows.
   {
@@ -624,11 +624,11 @@ TEST(LlmOpenAIProviderTest, MalformedBatchIsNotSuccess) {
     fixture.transport->responses.push_back(
         FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
     ModelRequest request = MakeRequest();
-    request.max_tool_calls = 1;
+    request.max_command_calls = 1;
     const CompletionResult result =
         fixture.Complete(request, fixture.Options());
-    EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
-    EXPECT_TRUE(result.HasToolCalls())
+    EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
+    EXPECT_TRUE(result.HasCommandCalls())
         << "the batch is still reported for diagnostics";
   }
 }
@@ -638,8 +638,8 @@ TEST(LlmOpenAIProviderTest, UnsupportedRequirementsAreRefusedNotIgnored) {
   // with enforcing them.
   auto options_without_guarantees = [](const Fixture& fixture) {
     ProviderOptions options = fixture.Options();
-    options.capabilities.strict_tool_schema = false;
-    options.capabilities.forced_tool_choice = false;
+    options.capabilities.strict_command_schema = false;
+    options.capabilities.forced_command_choice = false;
     return options;
   };
 
@@ -679,10 +679,10 @@ TEST(LlmOpenAIProviderTest, ExposesNameAndCapabilities) {
 
   EXPECT_EQ(provider.Name(), "openai");
   const ProviderCapabilities capabilities = provider.Capabilities();
-  EXPECT_TRUE(capabilities.multiple_tool_calls);
-  EXPECT_TRUE(capabilities.forced_tool_choice);
-  EXPECT_TRUE(capabilities.strict_tool_schema);
-  EXPECT_TRUE(capabilities.tool_result_history);
+  EXPECT_TRUE(capabilities.multiple_command_calls);
+  EXPECT_TRUE(capabilities.forced_command_choice);
+  EXPECT_TRUE(capabilities.strict_command_schema);
+  EXPECT_TRUE(capabilities.command_result_history);
 }
 
 // Exercises the real (cpp-httplib) transport, which the other tests replace
@@ -720,7 +720,7 @@ TEST(LlmOpenAIProviderTest, UnknownToolIsNotSuccess) {
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
 
-  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
   EXPECT_FALSE(result.IsSuccess());
   EXPECT_NE(result.ErrorMessage().find("delete_everything"), std::string::npos);
 }
@@ -737,19 +737,19 @@ TEST(LlmOpenAIProviderTest, SchemaViolationIsNotSuccess) {
   const CompletionResult result =
       fixture.Complete(MakeRequest(), fixture.Options());
 
-  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
-  EXPECT_TRUE(result.HasToolCalls())
+  EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
+  EXPECT_TRUE(result.HasCommandCalls())
       << "an unvalidated batch is still reported for diagnostics";
   EXPECT_NE(result.ErrorMessage().find("level"), std::string::npos);
 }
 
 TEST(LlmOpenAIProviderTest, InjectedValidatorDecides) {
   // An application policy: one change per decision, whatever the schema says.
-  class SingleCallPolicy : public ToolCallValidator {
+  class SingleCallPolicy : public CommandValidator {
    public:
     ValidationReport Validate(
         const ModelRequest&,
-        const std::vector<ToolCall>& tool_calls) const override {
+        const std::vector<CommandCall>& tool_calls) const override {
       ValidationReport report;
       if (tool_calls.size() != 1) {
         ValidationIssue issue;
@@ -770,7 +770,7 @@ TEST(LlmOpenAIProviderTest, InjectedValidatorDecides) {
   const CompletionResult result =
       fixture.Complete(MakeRequest(), std::move(options));
 
-  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
   EXPECT_NE(result.ErrorMessage().find("exactly one tool call"),
             std::string::npos);
 }
@@ -786,13 +786,13 @@ TEST(LlmOpenAIProviderTest, DowngradeStillValidates) {
       FakeTransport::Ok(MakeResponse(message)));
 
   ProviderOptions options = fixture.Options();
-  options.capabilities.strict_tool_schema = false;  // tools request strict
+  options.capabilities.strict_command_schema = false;  // tools request strict
   options.allow_validation_downgrade = true;
 
   const CompletionResult result =
       fixture.Complete(MakeRequest(), std::move(options));
 
-  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_EQ(result.status, CompletionStatus::InvalidCommandCalls);
   EXPECT_FALSE(result.warnings.empty());
 }
 
@@ -810,18 +810,18 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
   const CompletionResult decision =
       fixture.Complete(MakeRequest(), fixture.Options());
   ASSERT_TRUE(decision.IsSuccess()) << decision.ErrorMessage();
-  ASSERT_EQ(decision.tool_calls.size(), 2u);
+  ASSERT_EQ(decision.command_calls.size(), 2u);
 
   // 2. The caller applies it and assembles the next context: the assistant turn
   //    with those tool calls, one tool turn per applied call, then new state.
   ModelRequest second = MakeRequest();
   second.messages.push_back(decision.ToAssistantMessage());
-  for (const ToolCall& call : decision.tool_calls) {
-    ToolResult applied;
-    applied.tool_call_id = call.id;
+  for (const CommandCall& call : decision.command_calls) {
+    CommandResult applied;
+    applied.command_call_id = call.id;
     applied.name = call.name;
     applied.content_json = R"({"applied":true})";
-    second.messages.push_back(Message::ToolResult(applied));
+    second.messages.push_back(Message::CommandResultMessage(applied));
   }
   second.messages.push_back(Message::User("Opponent switched to a low block."));
 
@@ -843,19 +843,19 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
   EXPECT_EQ(assistant["role"], "assistant");
   EXPECT_TRUE(assistant["content"].is_null());
   ASSERT_EQ(assistant["tool_calls"].size(), 2u);
-  EXPECT_EQ(assistant["tool_calls"][0]["id"], decision.tool_calls[0].id);
+  EXPECT_EQ(assistant["tool_calls"][0]["id"], decision.command_calls[0].id);
   EXPECT_EQ(assistant["tool_calls"][0]["function"]["name"],
-            decision.tool_calls[0].name);
+            decision.command_calls[0].name);
   // The argument text survives the round trip byte for byte.
   EXPECT_EQ(
       assistant["tool_calls"][0]["function"]["arguments"].get<std::string>(),
-      decision.tool_calls[0].arguments_json);
-  EXPECT_EQ(assistant["tool_calls"][1]["id"], decision.tool_calls[1].id);
+      decision.command_calls[0].arguments_json);
+  EXPECT_EQ(assistant["tool_calls"][1]["id"], decision.command_calls[1].id);
 
   EXPECT_EQ(messages[3]["role"], "tool");
-  EXPECT_EQ(messages[3]["tool_call_id"], decision.tool_calls[0].id);
+  EXPECT_EQ(messages[3]["tool_call_id"], decision.command_calls[0].id);
   EXPECT_EQ(messages[3]["content"], R"({"applied":true})");
-  EXPECT_EQ(messages[4]["tool_call_id"], decision.tool_calls[1].id);
+  EXPECT_EQ(messages[4]["tool_call_id"], decision.command_calls[1].id);
   EXPECT_EQ(messages[5]["role"], "user");
   EXPECT_EQ(messages[5]["content"], "Opponent switched to a low block.");
 }
@@ -923,7 +923,7 @@ TEST(LlmOpenAIParserTest, MissingArgumentsAreNotInvented) {
 TEST(LlmOpenAIProviderTest, UnenforceableSchemaIsRefusedBeforeSending) {
   Fixture fixture;
   ModelRequest request = MakeRequest();
-  request.tools[0].parameters_schema_json =
+  request.commands[0].parameters_schema_json =
       R"({"type":"object","properties":{"level":{"type":"integer","pattern":"[0-5]"}}})";
 
   const CompletionResult result = fixture.Complete(request, fixture.Options());

@@ -19,8 +19,8 @@ namespace {
 
 constexpr char kRawArguments[] = R"({"level":4})";
 
-ToolDefinition PressingTool() {
-  ToolDefinition tool;
+CommandDefinition PressingTool() {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Pressing intensity";
   tool.parameters_schema_json =
@@ -32,8 +32,8 @@ ToolDefinition PressingTool() {
 CompletionResult SuccessfulBatch() {
   CompletionResult result;
   result.status = CompletionStatus::Success;
-  result.tool_calls = {
-      ToolCall{"call_a", "set_pressing_intensity", kRawArguments}};
+  result.command_calls = {
+      CommandCall{"call_a", "set_pressing_intensity", kRawArguments}};
   result.assistant_text = "Adjusting.";
   result.usage = Usage{10, 5, 15};
   result.http_attempts = 1;
@@ -45,10 +45,10 @@ CompletionResult SuccessfulBatch() {
 CompletionResult TwoCallBatch() {
   CompletionResult result;
   result.status = CompletionStatus::Success;
-  result.tool_calls = {
-      ToolCall{"call_a", "set_pressing_intensity", kRawArguments}};
-  result.tool_calls.push_back(
-      ToolCall{"call_b", "set_defensive_line", R"({"height":"high"})"});
+  result.command_calls = {
+      CommandCall{"call_a", "set_pressing_intensity", kRawArguments}};
+  result.command_calls.push_back(
+      CommandCall{"call_b", "set_defensive_line", R"({"height":"high"})"});
   result.usage = Usage{10, 5, 15};
   result.http_attempts = 1;
   result.model = "scripted-model";
@@ -113,9 +113,9 @@ ContextUpdate Update(std::string revision, std::string context = "Minute 62.") {
   return update;
 }
 
-ToolResult ResultFor(const std::string& call_id) {
-  ToolResult result;
-  result.tool_call_id = call_id;
+CommandResult ResultFor(const std::string& call_id) {
+  CommandResult result;
+  result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
   result.content_json = R"({"applied":true})";
   return result;
@@ -132,15 +132,15 @@ AgentConfig DefaultConfig() {
   config.id = "home";
   config.model = "scripted-model";
   config.system_prompt = "You are the head coach.";
-  config.max_tokens = 300;
-  config.max_tool_calls = 3;
+  config.max_output_tokens = 300;
+  config.max_command_calls = 3;
   return config;
 }
 
 TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-62"));
   std::future<DecisionResult> future = agent.DecideAsync();
@@ -151,7 +151,7 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
       << decision.completion.ErrorMessage();
   EXPECT_EQ(decision.decision_id, 1u);
   EXPECT_EQ(decision.context_revision, "rev-62");
-  EXPECT_EQ(decision.completion.tool_calls[0].arguments_json, kRawArguments);
+  EXPECT_EQ(decision.completion.command_calls[0].arguments_json, kRawArguments);
 
   // Staged, not recorded: the history moves only when results arrive.
   EXPECT_EQ(agent.PendingDecisionCount(), 1u);
@@ -171,11 +171,11 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
             std::string::npos);
   EXPECT_EQ(request.messages[2].role, Role::User);
   EXPECT_NE(request.messages[2].content.find("Minute 62."), std::string::npos);
-  ASSERT_EQ(request.tools.size(), 1u);
-  EXPECT_EQ(request.tools[0].name, "set_pressing_intensity");
-  EXPECT_EQ(request.tool_choice.mode, ToolChoiceMode::Required);
+  ASSERT_EQ(request.commands.size(), 1u);
+  EXPECT_EQ(request.commands[0].name, "set_pressing_intensity");
+  EXPECT_EQ(request.command_choice.mode, CommandChoiceMode::Required);
   EXPECT_EQ(request.max_tokens, 300);
-  EXPECT_EQ(request.max_tool_calls, 3u);
+  EXPECT_EQ(request.max_command_calls, 3u);
   EXPECT_EQ(request.log.session_id, "home");
   EXPECT_EQ(request.log.request_id, 1u);
 }
@@ -183,12 +183,12 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
 TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
 
-  EXPECT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
+  EXPECT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
             RecordOutcome::Recorded);
   EXPECT_EQ(agent.PendingDecisionCount(), 0u);
   EXPECT_FALSE(agent.IsBusy());
@@ -196,7 +196,7 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   const Context context = agent.ContextSnapshot();
   ASSERT_EQ(context.decision_count(), 1u);
   EXPECT_EQ(context.decisions()[0].decision_id, first.decision_id);
-  EXPECT_EQ(context.decisions()[0].tool_results.size(), 1u);
+  EXPECT_EQ(context.decisions()[0].command_results.size(), 1u);
 
   // The next decision carries the confirmed round.
   const DecisionResult second = Decide(agent, Update("rev-70"));
@@ -206,10 +206,10 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   // system, assistant(tool calls), tool result, recent history, current context
   ASSERT_EQ(messages.size(), 5u);
   EXPECT_EQ(messages[1].role, Role::Assistant);
-  ASSERT_EQ(messages[1].tool_calls.size(), 1u);
-  EXPECT_EQ(messages[1].tool_calls[0].arguments_json, kRawArguments);
+  ASSERT_EQ(messages[1].command_calls.size(), 1u);
+  EXPECT_EQ(messages[1].command_calls[0].arguments_json, kRawArguments);
   EXPECT_EQ(messages[2].role, Role::Tool);
-  EXPECT_EQ(messages[2].tool_call_id, "call_a");
+  EXPECT_EQ(messages[2].command_call_id, "call_a");
 }
 
 TEST(LlmAgentTest, OneDecisionAtATime) {
@@ -238,30 +238,30 @@ TEST(LlmAgentTest, IncompleteResultsRecordNothing) {
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
-  EXPECT_EQ(agent.RecordToolResults(decision.decision_id, {}),
+  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id, {}),
             RecordOutcome::IncompleteResults);
-  EXPECT_EQ(agent.RecordToolResults(decision.decision_id,
+  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id,
                                     {ResultFor("call_unknown")}),
             RecordOutcome::IncompleteResults);
-  EXPECT_EQ(agent.RecordToolResults(999, {ResultFor("call_a")}),
+  EXPECT_EQ(agent.RecordCommandResults(999, {ResultFor("call_a")}),
             RecordOutcome::UnknownDecision);
 
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 0u);
   EXPECT_EQ(agent.PendingDecisionCount(), 1u);
   EXPECT_EQ(
-      agent.RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      agent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
 }
 
 TEST(LlmAgentTest, FailedDecisionsAreNotStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
-  provider->next.status = CompletionStatus::NoToolCalls;
+  provider->next.status = CompletionStatus::NoCommandCalls;
   Agent agent(provider, DefaultConfig());
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
-  EXPECT_EQ(decision.completion.status, CompletionStatus::NoToolCalls);
+  EXPECT_EQ(decision.completion.status, CompletionStatus::NoCommandCalls);
   EXPECT_EQ(decision.decision_id, 0u);
   EXPECT_EQ(agent.PendingDecisionCount(), 0u);
   EXPECT_FALSE(agent.IsBusy());
@@ -279,7 +279,7 @@ TEST(LlmAgentTest, AgentsShareAProviderButNotAContext) {
   const DecisionResult home_decision = Decide(home, Update("rev-h"));
   ASSERT_TRUE(home_decision.completion.IsSuccess());
   EXPECT_EQ(
-      home.RecordToolResults(home_decision.decision_id, {ResultFor("call_a")}),
+      home.RecordCommandResults(home_decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
 
   const DecisionResult away_decision = Decide(away, Update("rev-a"));
@@ -304,16 +304,16 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
 
   agent.SetSystemPrompt("You are the assistant coach.");
   agent.SetModel("another-model");
-  agent.SetTools({});
+  agent.SetCommands({});
   EXPECT_EQ(agent.model(), "another-model");
-  EXPECT_TRUE(agent.tools().empty());
+  EXPECT_TRUE(agent.commands().empty());
 
   const DecisionResult decision = Decide(agent, Update("rev-5"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   const ModelRequest& request = provider->requests[0];
   EXPECT_EQ(request.model, "another-model");
-  EXPECT_TRUE(request.tools.empty());
+  EXPECT_TRUE(request.commands.empty());
   EXPECT_EQ(request.messages[0].content, "You are the assistant coach.");
 }
 
@@ -328,7 +328,7 @@ TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   const DecisionResult refused = Decide(agent, Update("rev-63"));
   EXPECT_EQ(refused.status, DecisionStatus::Closed);
   EXPECT_EQ(provider->requests.size(), 1u);
-  EXPECT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
+  EXPECT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
             RecordOutcome::Closed);
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 0u);
 }
@@ -347,7 +347,7 @@ TEST(LlmAgentTest, WaitForIdleReportsWhenTheWorkerIsDone) {
 TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   agent.UpdateContext(Update("rev-62", "Minute 62."));
   std::future<DecisionResult> future = agent.DecideAsync();
@@ -366,7 +366,7 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
       << "the decision reports the snapshot it was taken from";
 
   // ... and the next decision sees the newer state.
-  ASSERT_EQ(agent.RecordToolResults(first.decision_id, {ResultFor("call_a")}),
+  ASSERT_EQ(agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
             RecordOutcome::Recorded);
   const DecisionResult second = agent.DecideAsync().get();
   ASSERT_TRUE(second.completion.IsSuccess());
@@ -406,24 +406,24 @@ TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
-  ASSERT_EQ(decision.completion.tool_calls.size(), 2u);
+  ASSERT_EQ(decision.completion.command_calls.size(), 2u);
 
   // The game may execute in whatever order it likes (here reversed); the
   // transcript is normalized to the order the model asked in, so every tool
   // turn sits next to its call in a deterministic position.
-  EXPECT_EQ(agent.RecordToolResults(decision.decision_id,
+  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id,
                                     {ResultFor("call_b"), ResultFor("call_a")}),
             RecordOutcome::Recorded);
 
   // Keep the snapshot alive: ContextSnapshot() returns a copy.
   const Context context = agent.ContextSnapshot();
   const DecisionRecord& record = context.decisions()[0];
-  ASSERT_EQ(record.assistant.tool_calls.size(), 2u);
-  EXPECT_EQ(record.assistant.tool_calls[0].id, "call_a");
-  EXPECT_EQ(record.assistant.tool_calls[1].id, "call_b");
-  ASSERT_EQ(record.tool_results.size(), 2u);
-  EXPECT_EQ(record.tool_results[0].tool_call_id, "call_a");
-  EXPECT_EQ(record.tool_results[1].tool_call_id, "call_b");
+  ASSERT_EQ(record.assistant.command_calls.size(), 2u);
+  EXPECT_EQ(record.assistant.command_calls[0].id, "call_a");
+  EXPECT_EQ(record.assistant.command_calls[1].id, "call_b");
+  ASSERT_EQ(record.command_results.size(), 2u);
+  EXPECT_EQ(record.command_results[0].command_call_id, "call_a");
+  EXPECT_EQ(record.command_results[1].command_call_id, "call_b");
 }
 
 }  // namespace

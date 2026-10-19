@@ -19,8 +19,8 @@ namespace {
 /// The argument text the scripted server sends: preserved byte for byte.
 constexpr char kWireArguments[] = R"({"level": 4})";
 
-ToolDefinition PressingTool() {
-  ToolDefinition tool;
+CommandDefinition PressingTool() {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Pressing intensity";
   tool.parameters_schema_json =
@@ -29,8 +29,8 @@ ToolDefinition PressingTool() {
   return tool;
 }
 
-ToolDefinition LineTool() {
-  ToolDefinition tool;
+CommandDefinition LineTool() {
+  CommandDefinition tool;
   tool.name = "set_defensive_line";
   tool.description = "Defensive line height";
   tool.parameters_schema_json =
@@ -99,9 +99,9 @@ ContextUpdate Update(std::string context, std::string revision) {
   return update;
 }
 
-ToolResult ResultFor(const std::string& call_id, const std::string& name) {
-  ToolResult result;
-  result.tool_call_id = call_id;
+CommandResult ResultFor(const std::string& call_id, const std::string& name) {
+  CommandResult result;
+  result.command_call_id = call_id;
   result.name = name;
   result.content_json = R"({"applied":true})";
   return result;
@@ -122,11 +122,11 @@ struct Fixture {
     config.model = llm::openai::models::kGpt56;
     config.system_prompt = "You are the head coach.";
     config.context.max_messages = max_messages;
-    config.max_tokens = 300;
-    config.max_tool_calls = 3;
+    config.max_output_tokens = 300;
+    config.max_command_calls = 3;
     agent = std::make_shared<Agent>(
         llm::openai::CreateProvider(std::move(options)), std::move(config));
-    agent->SetTools({PressingTool(), LineTool()});
+    agent->SetCommands({PressingTool(), LineTool()});
   }
 
   /// One decision round: update the context, then ask.
@@ -148,9 +148,9 @@ TEST(LlmAgentOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
   ASSERT_TRUE(decision.completion.IsSuccess())
       << decision.completion.ErrorMessage();
   EXPECT_EQ(decision.context_revision, "rev-62");
-  ASSERT_EQ(decision.completion.tool_calls.size(), 2u);
-  EXPECT_EQ(decision.completion.tool_calls[0].name, "set_pressing_intensity");
-  EXPECT_EQ(decision.completion.tool_calls[0].arguments_json, kWireArguments)
+  ASSERT_EQ(decision.completion.command_calls.size(), 2u);
+  EXPECT_EQ(decision.completion.command_calls[0].name, "set_pressing_intensity");
+  EXPECT_EQ(decision.completion.command_calls[0].arguments_json, kWireArguments)
       << "the argument text the model produced is preserved verbatim";
   EXPECT_EQ(decision.completion.usage.total_tokens, 28);
   EXPECT_EQ(decision.completion.http_attempts, 1);
@@ -170,7 +170,7 @@ TEST(LlmAgentOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
             std::string::npos);
 }
 
-TEST(LlmAgentOpenAITest, ToolResultsFeedTheNextRequest) {
+TEST(LlmAgentOpenAITest, CommandResultsFeedTheNextRequest) {
   Fixture fixture;
   fixture.transport->responses.push_back(TwoCallResponse());
 
@@ -179,7 +179,7 @@ TEST(LlmAgentOpenAITest, ToolResultsFeedTheNextRequest) {
 
   // The game executes the batch and reports what it did.
   EXPECT_EQ(
-      fixture.agent->RecordToolResults(
+      fixture.agent->RecordCommandResults(
           first.decision_id, {ResultFor("call_a", "set_pressing_intensity"),
                               ResultFor("call_b", "set_defensive_line")}),
       RecordOutcome::Recorded);
@@ -225,7 +225,7 @@ TEST(LlmAgentOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
     const DecisionResult decision = fixture.agent->DecideAsync().get();
     ASSERT_TRUE(decision.completion.IsSuccess())
         << decision.completion.ErrorMessage();
-    ASSERT_EQ(fixture.agent->RecordToolResults(
+    ASSERT_EQ(fixture.agent->RecordCommandResults(
                   decision.decision_id,
                   {ResultFor("call_a", "set_pressing_intensity"),
                    ResultFor("call_b", "set_defensive_line")}),
@@ -292,7 +292,7 @@ TEST(LlmAgentOpenAITest, InvalidBatchesNeverReachTheCallerAsSuccess) {
   const DecisionResult decision = fixture.Decide("rev-62");
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
-  EXPECT_EQ(decision.completion.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_EQ(decision.completion.status, CompletionStatus::InvalidCommandCalls);
   EXPECT_FALSE(decision.completion.IsSuccess());
   EXPECT_NE(decision.completion.ErrorMessage().find("level"),
             std::string::npos);
@@ -316,7 +316,7 @@ TEST(LlmAgentOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
         << decision.completion.ErrorMessage();
     EXPECT_EQ(decision.decision_id, expected_id++);
     EXPECT_EQ(decision.context_revision, revision);
-    EXPECT_EQ(fixture.agent->RecordToolResults(
+    EXPECT_EQ(fixture.agent->RecordCommandResults(
                   decision.decision_id,
                   {ResultFor("call_a", "set_pressing_intensity"),
                    ResultFor("call_b", "set_defensive_line")}),
@@ -329,9 +329,9 @@ TEST(LlmAgentOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
     const DecisionRecord& record = context.decisions()[i];
     EXPECT_EQ(record.decision_id, i + 1);
     EXPECT_EQ(record.context_revision, "rev-" + std::to_string(i + 1));
-    EXPECT_EQ(record.assistant.tool_calls.size(), 2u);
-    EXPECT_EQ(record.tool_results.size(), 2u);
-    EXPECT_EQ(record.tool_results[0].tool_call_id, "call_a");
+    EXPECT_EQ(record.assistant.command_calls.size(), 2u);
+    EXPECT_EQ(record.command_results.size(), 2u);
+    EXPECT_EQ(record.command_results[0].command_call_id, "call_a");
   }
   EXPECT_EQ(fixture.transport->bodies.size(), 4u);
 }

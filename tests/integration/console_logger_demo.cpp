@@ -52,8 +52,8 @@ class ScriptedTransport : public llm::ITransport {
   }
 };
 
-llm::ToolDefinition PressingTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition PressingTool() {
+  llm::CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Raise or lower the pressing intensity";
   tool.parameters_schema_json =
@@ -70,9 +70,9 @@ llm::ContextUpdate Update(const std::string& revision) {
   return update;
 }
 
-llm::ToolResult ResultFor(const std::string& call_id) {
-  llm::ToolResult result;
-  result.tool_call_id = call_id;
+llm::CommandResult ResultFor(const std::string& call_id) {
+  llm::CommandResult result;
+  result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
   result.content_json = R"({"applied":true})";
   return result;
@@ -97,15 +97,15 @@ int main() {
   config.model = llm::openai::models::kGpt56;
   config.system_prompt = "You are the head coach. Answer only with tool calls.";
   config.logger = logger;
-  config.max_tokens = 300;
-  config.max_tool_calls = 3;
+  config.max_output_tokens = 300;
+  config.max_command_calls = 3;
 
   // A scripted transport keeps the demo offline; with a real key, drop it and
   // use CreateProviderFromEnvironment(logger) instead.
   provider_options.transport = std::make_shared<ScriptedTransport>();
   llm::Agent agent(llm::openai::CreateProvider(std::move(provider_options)),
                    std::move(config));
-  agent.SetTools({PressingTool()});
+  agent.SetCommands({PressingTool()});
 
   std::cout << "-- decision 1: a normal round\n";
   agent.UpdateContext(Update("rev-62"));
@@ -120,11 +120,11 @@ int main() {
   agent.DecideAsync().get();
 
   std::cout << "\n-- recording the first decision's results\n";
-  std::vector<llm::ToolResult> results;
-  for (const llm::ToolCall& call : first.completion.tool_calls) {
+  std::vector<llm::CommandResult> results;
+  for (const llm::CommandCall& call : first.completion.command_calls) {
     results.push_back(ResultFor(call.id));
   }
-  agent.RecordToolResults(first.decision_id, results);
+  agent.RecordCommandResults(first.decision_id, results);
 
   std::cout << "\n-- decision 2, then discarding it (stale revision)\n";
   agent.UpdateContext(Update("rev-70"));

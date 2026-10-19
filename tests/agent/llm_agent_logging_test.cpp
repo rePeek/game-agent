@@ -20,8 +20,8 @@ namespace {
 
 constexpr char kContextText[] = "Minute 62, opponent presses high.";
 
-ToolDefinition PressingTool() {
-  ToolDefinition tool;
+CommandDefinition PressingTool() {
+  CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "pressing";
   tool.parameters_schema_json =
@@ -32,8 +32,8 @@ ToolDefinition PressingTool() {
 CompletionResult SuccessfulBatch() {
   CompletionResult result;
   result.status = CompletionStatus::Success;
-  result.tool_calls = {
-      ToolCall{"call_a", "set_pressing_intensity", R"({"level":4})"}};
+  result.command_calls = {
+      CommandCall{"call_a", "set_pressing_intensity", R"({"level":4})"}};
   result.usage = Usage{10, 5, 15};
   result.http_attempts = 1;
   result.model = "gpt-5.6";
@@ -81,9 +81,9 @@ ContextUpdate Update(std::string revision) {
   return update;
 }
 
-ToolResult ResultFor(const std::string& call_id) {
-  ToolResult result;
-  result.tool_call_id = call_id;
+CommandResult ResultFor(const std::string& call_id) {
+  CommandResult result;
+  result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
   result.content_json = R"({"applied":true})";
   return result;
@@ -102,7 +102,7 @@ struct Fixture {
     config.system_prompt = "You are the head coach.";
     config.logger = injected != nullptr ? std::move(injected) : logger;
     agent = std::make_shared<Agent>(provider, std::move(config));
-    agent->SetTools({PressingTool()});
+    agent->SetCommands({PressingTool()});
   }
 
   /// One decision round: update the context, then ask.
@@ -118,7 +118,7 @@ TEST(LlmAgentLoggingTest, LifecycleEventsCarryTheAgentAndRequestId) {
 
   const DecisionResult decision = fixture.Decide("rev-62");
   ASSERT_TRUE(decision.completion.IsSuccess());
-  fixture.agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")});
+  fixture.agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")});
 
   const std::vector<LogRecord> records = fixture.logger->Records();
   ASSERT_EQ(records.size(), 4u);
@@ -136,7 +136,7 @@ TEST(LlmAgentLoggingTest, LifecycleEventsCarryTheAgentAndRequestId) {
       << "started and completed describe the same attempt";
   EXPECT_NE(records[1].message.find("rev=rev-62"), std::string::npos);
   EXPECT_NE(records[2].message.find("status=success"), std::string::npos);
-  EXPECT_NE(records[2].message.find("tools=1"), std::string::npos);
+  EXPECT_NE(records[2].message.find("commands=1"), std::string::npos);
   EXPECT_NE(records[2].message.find("tokens=15"), std::string::npos);
   EXPECT_NE(records[3].message.find("decision_id=1"), std::string::npos);
   EXPECT_EQ(records[3].request_id, records[1].request_id)
@@ -159,7 +159,7 @@ TEST(LlmAgentLoggingTest, RejectionsAndDiscardsExplainThemselves) {
   const std::vector<std::string> rejections =
       fixture.logger->Messages(log_event::kDecisionRejected);
   ASSERT_EQ(rejections.size(), 1u);
-  EXPECT_NE(rejections[0].find("awaiting tool results"), std::string::npos);
+  EXPECT_NE(rejections[0].find("awaiting command results"), std::string::npos);
   EXPECT_EQ(fixture.agent->current_revision(), "rev-63")
       << "UpdateContext records the world state whether or not a decision "
          "starts";
@@ -189,16 +189,16 @@ TEST(LlmAgentLoggingTest, RecordRejectionsAreVisible) {
   fixture.provider->next = SuccessfulBatch();
   const DecisionResult decision = fixture.Decide("rev-62");
 
-  EXPECT_EQ(fixture.agent->RecordToolResults(999, {ResultFor("call_a")}),
+  EXPECT_EQ(fixture.agent->RecordCommandResults(999, {ResultFor("call_a")}),
             RecordOutcome::UnknownDecision);
-  EXPECT_EQ(fixture.agent->RecordToolResults(decision.decision_id, {}),
+  EXPECT_EQ(fixture.agent->RecordCommandResults(decision.decision_id, {}),
             RecordOutcome::IncompleteResults);
 
   const std::vector<std::string> rejections =
       fixture.logger->Messages(log_event::kDecisionRecordRejected);
   ASSERT_EQ(rejections.size(), 2u);
   EXPECT_NE(rejections[0].find("no decision with that id"), std::string::npos);
-  EXPECT_NE(rejections[1].find("do not cover every tool call"),
+  EXPECT_NE(rejections[1].find("do not cover every command call"),
             std::string::npos);
   EXPECT_FALSE(fixture.logger->Has(log_event::kDecisionRecorded));
 
@@ -239,7 +239,7 @@ TEST(LlmAgentLoggingTest, AsynchronousDecisionsAreCorrelated) {
   for (const char* revision : {"rev-62", "rev-63"}) {
     const DecisionResult decision = fixture.Decide(revision);
     ASSERT_TRUE(decision.completion.IsSuccess());
-    ASSERT_EQ(fixture.agent->RecordToolResults(decision.decision_id,
+    ASSERT_EQ(fixture.agent->RecordCommandResults(decision.decision_id,
                                                {ResultFor("call_a")}),
               RecordOutcome::Recorded);
   }
@@ -265,7 +265,7 @@ TEST(LlmAgentLoggingTest, OnlyMetadataIsLogged) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
   const DecisionResult decision = fixture.Decide("rev-62");
-  fixture.agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")});
+  fixture.agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")});
 
   for (const LogRecord& record : fixture.logger->Records()) {
     EXPECT_EQ(record.message.find(kContextText), std::string::npos)
@@ -284,13 +284,13 @@ TEST(LlmAgentLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
   AgentConfig config;
   config.model = "gpt-5.6";
   Agent silent(fixture.provider, std::move(config));
-  silent.SetTools({PressingTool()});
+  silent.SetCommands({PressingTool()});
 
   silent.UpdateContext(Update("rev-62"));
   const DecisionResult decision = silent.DecideAsync().get();
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(
-      silent.RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      silent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
   EXPECT_TRUE(fixture.logger->Records().empty());
 }
@@ -307,7 +307,7 @@ TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   agent = std::make_shared<Agent>(provider, std::move(config));
-  agent->SetTools({PressingTool()});
+  agent->SetCommands({PressingTool()});
 
   agent->UpdateContext(Update("rev-62"));
   const DecisionResult decision = agent->DecideAsync().get();
@@ -316,7 +316,7 @@ TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
       << "a logger that queries the agent must not deadlock it";
   EXPECT_GT(logger->calls, 0);
   EXPECT_EQ(
-      agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
   agent.reset();  // the reentrant logger must not outlive the agent
 }
@@ -329,7 +329,7 @@ TEST(LlmAgentLoggingTest, AThrowingLoggerDoesNotChangeTheDecision) {
 
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(decision.decision_id, 1u);
-  EXPECT_EQ(fixture.agent->RecordToolResults(decision.decision_id,
+  EXPECT_EQ(fixture.agent->RecordCommandResults(decision.decision_id,
                                              {ResultFor("call_a")}),
             RecordOutcome::Recorded);
   EXPECT_EQ(fixture.agent->ContextSnapshot().decision_count(), 1u);

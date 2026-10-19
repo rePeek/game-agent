@@ -11,7 +11,7 @@
  *     -> future.get() / WaitForIdle()     // decision is ready
  *     -> the game checks the context revision
  *     -> the game executes the batch itself
- *     -> agent.RecordToolResults(...)     // history moves forward
+ *     -> agent.RecordCommandResults(...)     // history moves forward
  *
  * The SDK owns the transcript (system prompt, tools, current context, recent
  * history, confirmed decisions). The game owns the state, the side effects and
@@ -92,8 +92,8 @@ class ScriptedTransport : public llm::ITransport {
   std::size_t calls_ = 0;
 };
 
-llm::ToolDefinition PressingTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition PressingTool() {
+  llm::CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description = "Raise or lower how aggressively the team presses";
   tool.parameters_schema_json = R"({
@@ -109,8 +109,8 @@ llm::ToolDefinition PressingTool() {
   return tool;
 }
 
-llm::ToolDefinition LineTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition LineTool() {
+  llm::CommandDefinition tool;
   tool.name = "set_defensive_line";
   tool.description = "Move the defensive line up or down the pitch";
   tool.parameters_schema_json = R"({
@@ -127,8 +127,8 @@ llm::ToolDefinition LineTool() {
 
 /// A round that changes nothing has to be expressible, otherwise a forced tool
 /// call pushes the model into inventing a change.
-llm::ToolDefinition KeepTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition KeepTool() {
+  llm::CommandDefinition tool;
   tool.name = "keep_current_tactics";
   tool.description = "Keep the current setup; no change is needed this round";
   tool.parameters_schema_json = R"({
@@ -157,15 +157,15 @@ llm::ContextUpdate BuildContext(int minute, const std::string& revision) {
 
 /// Executing a decision is the game's job. Here we only report what would be
 /// applied, and hand the SDK a result per call (the SDK never runs tools).
-std::vector<llm::ToolResult> ExecuteBatch(
-    const std::vector<llm::ToolCall>& calls) {
-  std::vector<llm::ToolResult> results;
+std::vector<llm::CommandResult> ExecuteBatch(
+    const std::vector<llm::CommandCall>& calls) {
+  std::vector<llm::CommandResult> results;
   results.reserve(calls.size());
-  for (const llm::ToolCall& call : calls) {
+  for (const llm::CommandCall& call : calls) {
     std::cout << "  applying " << call.name << " " << call.arguments_json
               << "\n";
-    llm::ToolResult result;
-    result.tool_call_id = call.id;
+    llm::CommandResult result;
+    result.command_call_id = call.id;
     result.name = call.name;
     result.content_json = R"({"applied":true})";
     result.is_error = false;
@@ -208,10 +208,10 @@ void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
     return;
   }
 
-  const std::vector<llm::ToolResult> results =
-      ExecuteBatch(decision.completion.tool_calls);
+  const std::vector<llm::CommandResult> results =
+      ExecuteBatch(decision.completion.command_calls);
 
-  switch (agent.RecordToolResults(decision.decision_id, results)) {
+  switch (agent.RecordCommandResults(decision.decision_id, results)) {
     case llm::RecordOutcome::Recorded:
       std::cout << "  decision " << decision.decision_id
                 << " recorded; the next request sees it as history\n\n";
@@ -262,12 +262,12 @@ int main() {
       "the tactical setup. Never explain in prose.";
   config.context.max_messages = 32;  // budget for the transcript
   config.context.max_decisions = 4;
-  config.max_tokens = 300;
-  config.max_tool_calls = 3;
+  config.max_output_tokens = 300;
+  config.max_command_calls = 3;
   config.logger = logger;
 
   llm::Agent agent(provider, std::move(config));
-  agent.SetTools({PressingTool(), LineTool(), KeepTool()});
+  agent.SetCommands({PressingTool(), LineTool(), KeepTool()});
 
   RunWindow(agent, 62, "rev-62");
   RunWindow(agent, 70, "rev-70");

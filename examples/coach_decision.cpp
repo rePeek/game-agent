@@ -23,8 +23,8 @@
 
 namespace {
 
-llm::ToolDefinition PressingTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition PressingTool() {
+  llm::CommandDefinition tool;
   tool.name = "set_pressing_intensity";
   tool.description =
       "Raise or lower how aggressively the team presses the opponent";
@@ -41,8 +41,8 @@ llm::ToolDefinition PressingTool() {
   return tool;
 }
 
-llm::ToolDefinition DefensiveLineTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition DefensiveLineTool() {
+  llm::CommandDefinition tool;
   tool.name = "set_defensive_line";
   tool.description = "Move the defensive line up or down the pitch";
   tool.parameters_schema_json = R"({
@@ -59,8 +59,8 @@ llm::ToolDefinition DefensiveLineTool() {
 
 /// A decision round that changes nothing must be expressible, otherwise a
 /// forced tool call would push the model into inventing a change.
-llm::ToolDefinition KeepTacticsTool() {
-  llm::ToolDefinition tool;
+llm::CommandDefinition KeepTacticsTool() {
+  llm::CommandDefinition tool;
   tool.name = "keep_current_tactics";
   tool.description = "Keep the current setup; no change is needed this round";
   tool.parameters_schema_json = R"({
@@ -94,16 +94,16 @@ llm::ModelRequest BuildRequest() {
           "keep the current tactics."),
   };
 
-  request.tools = {PressingTool(), DefensiveLineTool(), KeepTacticsTool()};
-  request.tool_choice = llm::ToolChoice::Required();
+  request.commands = {PressingTool(), DefensiveLineTool(), KeepTacticsTool()};
+  request.command_choice = llm::CommandChoice::Required();
   request.max_tokens = 300;
-  request.max_tool_calls = 3;  // application policy
+  request.max_command_calls = 3;  // application policy
   return request;
 }
 
 /// Executing a decision is the game's job. The SDK hands over validated calls
 /// and the raw argument text; here we only report what would be applied.
-void ApplyDecision(const llm::ToolCall& call) {
+void ApplyDecision(const llm::CommandCall& call) {
   std::cout << "  applying " << call.name << " with arguments "
             << call.arguments_json << " (id " << call.id << ")\n";
 }
@@ -119,9 +119,9 @@ int main() {
   auto provider = llm::openai::CreateProviderFromEnvironment();
   if (std::getenv("OPENAI_API_KEY") == nullptr) {
     std::cout << "Set OPENAI_API_KEY to run this example against the API.\n"
-              << "It sends one completion with " << request.tools.size()
+              << "It sends one completion with " << request.commands.size()
               << " tools and a tool_choice of '"
-              << request.tool_choice.ToString() << "'.\n"
+              << request.command_choice.ToString() << "'.\n"
               << "See examples/offline_transport.cpp for the same flow without "
                  "a network.\n";
     return 0;
@@ -148,9 +148,9 @@ int main() {
     return 1;
   }
 
-  std::cout << "\ndecision batch (" << result.tool_calls.size()
+  std::cout << "\ndecision batch (" << result.command_calls.size()
             << " call(s)):\n";
-  for (const auto& call : result.tool_calls) {
+  for (const auto& call : result.command_calls) {
     ApplyDecision(call);
   }
 

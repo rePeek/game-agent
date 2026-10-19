@@ -69,7 +69,7 @@ RenderedContext Context::Render() const {
 
   for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
     rendered.messages.push_back((*it)->assistant);
-    for (const Message& result : (*it)->tool_results) {
+    for (const Message& result : (*it)->command_results) {
       rendered.messages.push_back(result);
     }
   }

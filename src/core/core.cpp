@@ -10,8 +10,8 @@
 
 namespace llm {
 
-std::string ToolCall::ToString() const {
-  return "ToolCall{id='" + id + "', name='" + name +
+std::string CommandCall::ToString() const {
+  return "CommandCall{id='" + id + "', name='" + name +
          "', arguments=" + arguments_json + "}";
 }
 
@@ -36,18 +36,18 @@ Message Message::Assistant(std::string message_content) {
   return message;
 }
 
-Message Message::AssistantToolCalls(std::vector<ToolCall> calls) {
+Message Message::AssistantCommandCalls(std::vector<CommandCall> calls) {
   Message message;
   message.role = Role::Assistant;
-  message.tool_calls = std::move(calls);
+  message.command_calls = std::move(calls);
   return message;
 }
 
-Message Message::ToolResult(const llm::ToolResult& result) {
+Message Message::CommandResultMessage(const llm::CommandResult& result) {
   Message message;
   message.role = Role::Tool;
   message.content = result.content_json;
-  message.tool_call_id = result.tool_call_id;
+  message.command_call_id = result.command_call_id;
   message.name = result.name;
   return message;
 }
@@ -74,7 +74,7 @@ std::string ToString(FinishReason reason) {
       return "length";
     case FinishReason::ContentFilter:
       return "content_filter";
-    case FinishReason::ToolCalls:
+    case FinishReason::CommandCalls:
       return "tool_calls";
     case FinishReason::Error:
       return "error";
@@ -84,40 +84,40 @@ std::string ToString(FinishReason reason) {
   return "unknown";
 }
 
-ToolChoice ToolChoice::Auto() {
-  return ToolChoice{ToolChoiceMode::Auto, {}};
+CommandChoice CommandChoice::Auto() {
+  return CommandChoice{CommandChoiceMode::Auto, {}};
 }
 
-ToolChoice ToolChoice::Required() {
-  return ToolChoice{ToolChoiceMode::Required, {}};
+CommandChoice CommandChoice::Required() {
+  return CommandChoice{CommandChoiceMode::Required, {}};
 }
 
-ToolChoice ToolChoice::None() {
-  return ToolChoice{ToolChoiceMode::None, {}};
+CommandChoice CommandChoice::None() {
+  return CommandChoice{CommandChoiceMode::None, {}};
 }
 
-ToolChoice ToolChoice::Specific(std::string name) {
-  return ToolChoice{ToolChoiceMode::Specific, std::move(name)};
+CommandChoice CommandChoice::Specific(std::string name) {
+  return CommandChoice{CommandChoiceMode::Specific, std::move(name)};
 }
 
-std::string ToolChoice::ToString() const {
+std::string CommandChoice::ToString() const {
   switch (mode) {
-    case ToolChoiceMode::Auto:
+    case CommandChoiceMode::Auto:
       return "auto";
-    case ToolChoiceMode::Required:
+    case CommandChoiceMode::Required:
       return "required";
-    case ToolChoiceMode::None:
+    case CommandChoiceMode::None:
       return "none";
-    case ToolChoiceMode::Specific:
-      return tool_name.empty() ? "specific" : tool_name;
+    case CommandChoiceMode::Specific:
+      return command_name.empty() ? "specific" : command_name;
   }
   return "unknown";
 }
 
-const ToolDefinition* ModelRequest::FindTool(const std::string& name) const {
-  for (const auto& tool : tools) {
-    if (tool.name == name) {
-      return &tool;
+const CommandDefinition* ModelRequest::FindCommand(const std::string& name) const {
+  for (const auto& command : commands) {
+    if (command.name == name) {
+      return &command;
     }
   }
   return nullptr;
@@ -134,7 +134,7 @@ Message CompletionResult::ToAssistantMessage() const {
   Message message;
   message.role = Role::Assistant;
   message.content = assistant_text;
-  message.tool_calls = tool_calls;
+  message.command_calls = command_calls;
   return message;
 }
 
@@ -142,10 +142,10 @@ std::string ToString(CompletionStatus status) {
   switch (status) {
     case CompletionStatus::Success:
       return "success";
-    case CompletionStatus::NoToolCalls:
-      return "no tool calls";
-    case CompletionStatus::InvalidToolCalls:
-      return "invalid tool calls";
+    case CompletionStatus::NoCommandCalls:
+      return "no command calls";
+    case CompletionStatus::InvalidCommandCalls:
+      return "invalid command calls";
     case CompletionStatus::Truncated:
       return "truncated";
     case CompletionStatus::Refused:
