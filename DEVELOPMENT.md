@@ -208,6 +208,13 @@ The suite is made of:
   provider status mapping against a fake transport, including one test that
   exercises the real cpp-httplib transport through a refused connection;
 - `tests/unit/llm_validation_test.cpp` — the tool-call validator;
+- `tests/unit/llm_context_test.cpp` — snapshot replacement, decision
+  contiguity and budget trimming;
+- `tests/unit/llm_session_test.cpp` — staging, atomic confirmation, the
+  one-decision-at-a-time rule and asynchronous submission;
+- `tests/integration/llm_session_openai_test.cpp` — Session + Context + the
+  OpenAI provider end to end over a scripted transport, asserting the wire
+  bodies of consecutive rounds;
 - `tests/standalone/llm_core_smoke.cpp` — a target that links only
   `llm::core` (no JSON, no HTTP, no TLS, not even a test framework). If the
   core ever grows a third-party dependency, it stops building.

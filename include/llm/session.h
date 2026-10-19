@@ -24,9 +24,11 @@
 #include "types.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -61,6 +63,11 @@ struct SessionConfig {
   ContextConfig context;
   std::string system_prompt;
   std::string model;  // the model every request in this session uses
+
+  /// Applied to every request this session builds: a decision round should be
+  /// bounded, and the tool-call bound is what the validator enforces.
+  std::optional<std::int32_t> max_tokens;
+  std::optional<std::size_t> max_tool_calls;
 };
 
 /// One coach, one side, one history. Independent Sessions share nothing.

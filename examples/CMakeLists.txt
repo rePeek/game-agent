@@ -20,12 +20,16 @@ function(add_llm_example name source_file)
     )
 endfunction()
 
-# One completion, one validated decision batch, dispatched by the game.
+# The Session flow: context in, validated decision batch out, history managed.
+add_llm_example(coach_session coach_session.cpp)
+
+# The provider flow on its own: one completion, caller-side dispatch.
 add_llm_example(coach_decision coach_decision.cpp)
 
 # The same flow without a network, using a scripted transport.
 add_llm_example(offline_transport offline_transport.cpp)
 
 message(STATUS "Examples will be built in: ${CMAKE_BINARY_DIR}/examples/")
-message(STATUS "  ./examples/coach_decision      (needs OPENAI_API_KEY)")
-message(STATUS "  ./examples/offline_transport   (no key, no network)")
+message(STATUS "  ./examples/coach_session      (scripted without OPENAI_API_KEY)")
+message(STATUS "  ./examples/coach_decision     (needs OPENAI_API_KEY)")
+message(STATUS "  ./examples/offline_transport  (no key, no network)")

@@ -30,6 +30,8 @@ struct Session::State {
   Context context;
   std::string system_prompt;
   std::string model;
+  std::optional<std::int32_t> max_tokens;
+  std::optional<std::size_t> max_tool_calls;
   bool closed = false;
   std::uint64_t next_decision_id = 1;
 
@@ -117,6 +119,8 @@ Session::Session(std::shared_ptr<IModelProvider> provider, SessionConfig config)
       provider_(std::move(provider)) {
   state_->system_prompt = std::move(config.system_prompt);
   state_->model = std::move(config.model);
+  state_->max_tokens = config.max_tokens;
+  state_->max_tool_calls = config.max_tool_calls;
   if (!state_->system_prompt.empty()) {
     state_->context.SetSystemPrompt(state_->system_prompt);
   }
@@ -194,6 +198,8 @@ Session::Attempt Session::BeginAttempt(ContextUpdate update) {
   attempt.started = true;
   attempt.context_revision = state_->context.context_revision();
   attempt.request = state_->context.BuildRequest(state_->model);
+  attempt.request.max_tokens = state_->max_tokens;
+  attempt.request.max_tool_calls = state_->max_tool_calls;
   state_->in_flight_revision = attempt.context_revision;
   return attempt;
 }

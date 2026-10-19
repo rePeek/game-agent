@@ -5,6 +5,10 @@ add_executable(ai_tests
     unit/llm_session_test.cpp
     unit/llm_openai_test.cpp
     unit/llm_validation_test.cpp
+
+    # Cross-component: Session + Context + the OpenAI provider over a
+    # scripted transport (still no network and no API key).
+    integration/llm_session_openai_test.cpp
 )
 
 # Link against the SDK and the test framework. The internal request builder and

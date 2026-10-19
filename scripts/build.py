@@ -219,7 +219,8 @@ def main(mode: str, tests: bool, clean: bool, verbose: bool, export_compile_comm
 {f"  🧪 Tests: {build_dir}/tests/" if tests else ""}
 
 [bold]To run examples:[/bold]
-  [cyan]{build_dir}/examples/offline_transport{example_suffix}[/cyan]   (no key, no network)
+  [cyan]{build_dir}/examples/coach_session{example_suffix}[/cyan]      (scripted without a key)
+  [cyan]{build_dir}/examples/offline_transport{example_suffix}[/cyan]  (no key, no network)
   [cyan]export OPENAI_API_KEY=your_openai_key[/cyan]
   [cyan]{build_dir}/examples/coach_decision{example_suffix}[/cyan]
 {tests_result}""",

@@ -28,9 +28,10 @@ its side effects, and it needs the model's decisions as data, not as prose.
 | Does | Does not |
 | --- | --- |
 | Describe tools with JSON schemas and forward them to the provider | Execute tools or apply their results |
-| Force tool calling (`tool_choice`) and request strict schemas | Maintain or advance a conversation by itself |
+| Force tool calling (`tool_choice`) and request strict schemas | Open the next decision window on its own |
 | Return every tool call in order, with ids and raw arguments | Stream tokens or SSE |
-| Validate the batch (known tools, count, JSON, schema) before Success | Retry into a multi-step workflow |
+| Validate the batch (known tools, count, JSON, schema) before Success | Summarize history with another model call |
+| Keep the transcript of a decision stream (`llm::Session`) | Let a rejected or stale batch into that transcript |
 | Report failures as statuses instead of silent fallbacks | Provide a general chat/text-generation API |
 
 ## Completion statuses
@@ -111,11 +112,74 @@ Runnable versions: [`examples/coach_decision.cpp`](examples/coach_decision.cpp)
 (scripted transport, no key, no network — it also prints the request body the
 SDK would send).
 
+## Sessions
+
+A game usually does not want to assemble messages per decision. `llm::Session`
+owns the transcript of one decision stream (one coach, one side) and hands out
+decisions:
+
+```cpp
+llm::SessionConfig config;
+config.model = llm::openai::models::kGpt56;
+config.system_prompt = "You are the head coach. Answer only with tool calls.";
+config.context.max_messages = 32;   // transcript budget
+config.max_tokens = 300;
+config.max_tool_calls = 3;          // enforced by the validator
+
+auto session = llm::CreateSession(
+    llm::openai::CreateProviderFromEnvironment(), std::move(config));
+session->SetTools(coach_tools);     // std::vector<llm::ToolDefinition>
+
+// Decision window: submit and keep simulating.
+std::future<llm::DecisionResult> future = session->CompleteAsync({
+    .current_context = board.Describe(),      // replaces the previous snapshot
+    .recent_history = coach.RecentTrends(),   // replaces the previous window
+    .context_revision = board.Revision(),
+});
+
+// Later in the game loop:
+if (session->WaitForIdle(std::chrono::milliseconds(0))) {
+  const llm::DecisionResult decision = future.get();
+  if (decision.status == llm::DecisionStatus::Completed &&
+      decision.completion.IsSuccess() &&
+      decision.context_revision == board.Revision()) {   // staleness check
+    auto results = coach_tools.ExecuteBatch(decision.completion.tool_calls);
+    session->RecordToolResults(decision.decision_id, results);
+  } else {
+    session->DiscardDecision(decision.decision_id);
+  }
+}
+```
+
+What the Session guarantees:
+
+- **state is not history**: the current context and the recent-history window
+  replace their predecessors, so old snapshots never pile up;
+- **one decision at a time**: while a decision is in flight or awaiting
+  results, a new one is refused as `Busy` (and its context update is not
+  applied), so a decision is never taken with an incomplete transcript;
+- **atomic confirmation**: a decision enters the transcript only when the
+  application reports exactly one result per tool call — otherwise nothing is
+  recorded and the decision stays pending. `DiscardDecision` drops it instead
+  (a stale revision, a rolled-back transaction);
+- **staleness is visible**: every decision carries the `context_revision` it
+  was taken from; deciding whether it is still relevant stays with the game;
+- **no blocking**: `CompleteAsync` snapshots the request on the calling thread
+  and runs the provider call on the session's own worker, so a 100 Hz loop
+  never waits on the network. `Close()` refuses further work and discards a
+  decision that returns afterwards; the destructor joins the worker.
+
+The transcript is trimmed deterministically by `ContextConfig::max_messages`
+and `max_decisions`: whole decisions are dropped oldest-first, never half of
+one, and `RenderedContext` reports what was kept. No summarization model call
+is involved.
+
 ## Feeding a previous decision back
 
-`llm::Message` keeps the tool vocabulary, so a decision round — the assistant's
-tool calls plus their results — can be sent back as context. The SDK builds
-neither the messages nor the loop:
+`llm::Session` does this for you; the section is here because the pieces it
+uses are public. `llm::Message` keeps the tool vocabulary, so a decision round —
+the assistant's tool calls plus their results — can be sent back as context.
+The SDK builds neither the messages nor the loop:
 
 ```cpp
 llm::ModelRequest next;
@@ -162,6 +226,9 @@ options.validator = std::make_shared<const OneChangePerRound>();
 ```
 
 ## Providers and guarantees
+
+A provider is what a Session wraps; it is also usable directly (see the coach
+decision example).
 
 A provider publishes what it can actually guarantee
 (`ProviderCapabilities`: parallel tool calls, forced tool choice, strict
@@ -225,8 +292,9 @@ find_package(ai-sdk-cpp CONFIG REQUIRED COMPONENTS core openai)
 target_link_libraries(my_target PRIVATE llm::openai)
 ```
 
-Components: `core` (standard-library-only protocol types), `validation`,
-`http` (transport implementation), `openai`, and `sdk` (everything).
+Components: `core` (standard-library-only protocol types), `validation`
+(schemas), `context` (`Context`/`Session`, no provider dependency), `http`
+(transport implementation), `openai`, and `sdk` (everything).
 `target_link_libraries(... llm::sdk)` is the shortcut for all of them.
 
 ## Dependencies
@@ -250,8 +318,11 @@ A consumer of the installed package needs OpenSSL and Threads only.
 
 ## Examples
 
-- [Coach decision](examples/coach_decision.cpp) — the intended flow: context,
-  tools, one completion, a validated batch, caller-side dispatch.
+- [Coach session](examples/coach_session.cpp) — the intended flow for a game:
+  a Session, asynchronous decisions, revision checks and history that moves
+  forward only when results are reported (runs offline without a key).
+- [Coach decision](examples/coach_decision.cpp) — the provider on its own:
+  context, tools, one completion, a validated batch, caller-side dispatch.
 - [Offline transport](examples/offline_transport.cpp) — the same flow with a
   scripted transport, including what an invalid batch looks like.
 
