@@ -8,7 +8,6 @@ add_executable(ai_tests
     # Integration tests
     integration/openai_integration_test.cpp
     integration/tool_calling_integration_test.cpp
-    integration/clickhouse_integration_test.cpp
     integration/multi_step_duplicate_execution_test.cpp
 
     # Utility classes
@@ -23,7 +22,6 @@ target_link_libraries(ai_tests
         GTest::gtest
         GTest::gtest_main
         GTest::gmock
-        ClickHouse::Client  # ClickHouse C++ client for integration tests
 )
 
 # Include directories for tests
@@ -52,7 +50,6 @@ target_compile_definitions(ai_tests PRIVATE
     $<$<CONFIG:Debug>:AI_SDK_DEBUG_TESTS=1>
     # httplib configuration (must match main library)
     CPPHTTPLIB_OPENSSL_SUPPORT=1
-    CPPHTTPLIB_ZLIB_SUPPORT=1
 )
 
 # Discover tests for CTest

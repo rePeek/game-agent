@@ -37,7 +37,6 @@ endfunction()
 # Common compile definitions for HTTP support
 set(HTTPLIB_COMPILE_DEFS
     CPPHTTPLIB_OPENSSL_SUPPORT=1
-    CPPHTTPLIB_ZLIB_SUPPORT=1
 )
 
 # Create libraries
@@ -101,7 +100,6 @@ target_link_libraries(ai-sdk-cpp-core
         $<BUILD_INTERFACE:OpenSSL::Crypto>
         $<INSTALL_INTERFACE:OpenSSL::SSL>
         $<INSTALL_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:ZLIB::ZLIB>
         $<INSTALL_INTERFACE:Threads::Threads>
 )
 
@@ -115,7 +113,6 @@ foreach(provider openai)
             $<BUILD_INTERFACE:httplib::httplib>
             $<INSTALL_INTERFACE:OpenSSL::SSL>
             $<INSTALL_INTERFACE:OpenSSL::Crypto>
-            $<INSTALL_INTERFACE:ZLIB::ZLIB>
             $<INSTALL_INTERFACE:Threads::Threads>
     )
 
@@ -199,7 +196,7 @@ endif()
 include(GNUInstallDirs)
 
 # Install all targets (httplib is internal only, not installed)
-set(ALL_TARGETS ${COMPONENT_TARGETS} ai-sdk-cpp nlohmann_json)
+set(ALL_TARGETS ${COMPONENT_TARGETS} ai-sdk-cpp)
 install(TARGETS ${ALL_TARGETS}
     EXPORT ai-sdk-cpp-targets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

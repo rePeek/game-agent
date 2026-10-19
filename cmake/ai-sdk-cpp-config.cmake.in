@@ -5,7 +5,6 @@
 include(CMakeFindDependencyMacro)
 find_dependency(OpenSSL REQUIRED)
 find_dependency(Threads REQUIRED)
-find_dependency(ZLIB REQUIRED)
 
 set(AI_SDK_VERSION "@PROJECT_VERSION@")
 

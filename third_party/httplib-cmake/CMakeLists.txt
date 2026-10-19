@@ -31,7 +31,6 @@ target_link_libraries(httplib INTERFACE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
-    ZLIB::ZLIB
     $<$<PLATFORM_ID:Windows>:ws2_32>
     $<$<PLATFORM_ID:Windows>:crypt32>
 )
@@ -39,8 +38,6 @@ target_link_libraries(httplib INTERFACE
 # Set compile definitions for httplib features
 target_compile_definitions(httplib INTERFACE
     CPPHTTPLIB_OPENSSL_SUPPORT
-    CPPHTTPLIB_ZLIB_SUPPORT
-    CPPHTTPLIB_THREAD_POOL_COUNT=8
 )
 
 # Require C++11 minimum (httplib's requirement)
