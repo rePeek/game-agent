@@ -49,14 +49,25 @@ struct CommandCall {
   std::string ToString() const;
 };
 
-/// Outcome of executing a command call, kept so the caller can feed it back as
-/// context for a later request. `content_json` is the command's own output (or
-/// the model-visible error rendering).
+/// What a game callback reports after running one command.
+///
+/// `content_json` is the command's own output as JSON text (usually an
+/// object). `error_message` explains a failure; it is what the model sees in
+/// the unified result rendering. A game never fills in the model's call id.
+struct CommandOutcome {
+  bool success = false;
+  std::string content_json;
+  std::string error_message;
+};
+
+/// One executed command, complete enough to feed back into the transcript:
+/// which model call it answers, what command it was, and its outcome.
 struct CommandResult {
   std::string command_call_id;
   std::string name;
-  std::string content_json;  // command output as JSON text, usually an object
-  bool is_error = false;
+  CommandOutcome outcome;
+
+  bool IsError() const { return !outcome.success; }
 };
 
 /// Why the model stopped generating.

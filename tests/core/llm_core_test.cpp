@@ -54,7 +54,7 @@ TEST(LlmCoreMessageTest, CommandResultCarriesCallIdAndPayload) {
   CommandResult result;
   result.command_call_id = "call_001";
   result.name = "set_pressing_intensity";
-  result.content_json = R"({"applied":true,"intensity":3})";
+  result.outcome.success = true; result.outcome.content_json = R"({"applied":true,"intensity":3})";
 
   const Message message = Message::CommandResultMessage(result);
 
@@ -78,7 +78,7 @@ TEST(LlmCoreMessageTest, ExpressesPreviousDecisionAsContext) {
     CommandResult result;
     result.command_call_id = call.id;
     result.name = call.name;
-    result.content_json = R"({"applied":true})";
+    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
     context.push_back(Message::CommandResultMessage(result));
   }
   context.push_back(Message::User("They switched to a low block."));

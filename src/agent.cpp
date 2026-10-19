@@ -1,6 +1,7 @@
 #include "llm/agent.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -32,6 +34,9 @@ CompletionResult ProviderThrew(const std::string& message) {
 /// may throw: nothing may let that escape into a game loop.
 CompletionResult CallProvider(const std::shared_ptr<IModelProvider>& provider,
                               const ModelRequest& request) {
+  if (!provider) {
+    return ProviderThrew("no provider is configured");
+  }
   try {
     return provider->Complete(request);
   } catch (const std::exception& error) {
@@ -55,6 +60,14 @@ DecisionResult Refused(DecisionStatus status,
   return result;
 }
 
+/// A token whose death or closure invalidates already-prepared commands. The
+/// Agent keeps the shared_ptr while a decision is pending; a PreparedCommand
+/// only holds a weak_ptr, so discarding or recording the decision (which
+/// destroys the token) makes the command refuse to run.
+struct Liveness {
+  std::atomic<bool> closed{false};
+};
+
 }  // namespace
 
 /// Everything an Agent owns.
@@ -72,7 +85,7 @@ struct Agent::Impl {
   std::string id;
   std::string model;
   std::string system_prompt;
-  std::vector<CommandDefinition> commands;
+  CommandRegistry registry;
   std::optional<std::int32_t> max_output_tokens;
   std::optional<std::size_t> max_command_calls;
   std::shared_ptr<ILogger> logger;
@@ -94,8 +107,12 @@ struct Agent::Impl {
     /// discarding can be correlated with the events of that attempt.
     std::uint64_t request_id = 0;
     std::string context_revision;
+    /// Registry version the decision was taken with; preparing against a
+    /// changed registry is refused.
+    std::uint64_t registry_version = 0;
     Message assistant;
-    std::vector<std::string> command_call_ids;  // in call order
+    std::vector<CommandCall> command_calls;  // in call order
+    std::shared_ptr<Liveness> live = std::make_shared<Liveness>();
   };
   std::vector<Pending> pending;  // at most one in this version
 
@@ -105,8 +122,8 @@ struct Agent::Impl {
     bool started = false;
     std::string context_revision;
     std::uint64_t request_id = 0;
-    /// Provider snapshotted when the attempt starts, so swapping the
-    /// provider while a decision is in flight cannot change what runs.
+    /// Provider snapshotted when the attempt starts, so swapping the provider
+    /// while a decision is in flight cannot change what runs.
     std::shared_ptr<IModelProvider> provider;
     ModelRequest request;
     DecisionResult refusal;  // valid when !started
@@ -142,7 +159,7 @@ struct Agent::Impl {
     request.messages.insert(request.messages.end(), rendered.messages.begin(),
                             rendered.messages.end());
 
-    request.commands = commands;
+    request.commands = registry.Definitions();
     request.command_choice = CommandChoice::Required();
     request.max_tokens = max_output_tokens;
     request.max_command_calls = max_command_calls;
@@ -151,8 +168,8 @@ struct Agent::Impl {
   }
 
   /// Reserves the agent for one decision and snapshots the request, or returns
-  /// a refusal (Closed/Busy) without touching anything. The context is whatever
-  /// UpdateContext() recorded last.
+  /// a refusal (NotConfigured/Busy/Closed) without touching anything. The
+  /// context is whatever UpdateContext() recorded last.
   Attempt BeginAttempt() {
     Attempt attempt;
     const std::shared_ptr<ILogger> log_sink = logger;
@@ -165,6 +182,11 @@ struct Agent::Impl {
         attempt.refusal =
             Refused(DecisionStatus::Closed, context.context_revision(),
                     "agent is closed");
+      } else if (!provider || model.empty()) {
+        attempt.refusal = Refused(
+            DecisionStatus::NotConfigured, context.context_revision(),
+            !provider ? "agent has no provider configured"
+                      : "agent has no model configured");
       } else if (in_flight_revision.has_value() || !pending.empty()) {
         attempt.refusal =
             Refused(DecisionStatus::Busy, context.context_revision(),
@@ -176,8 +198,8 @@ struct Agent::Impl {
         attempt.started = true;
         attempt.context_revision = context.context_revision();
         attempt.request_id = next_request_id++;
-        attempt.request = BuildRequestLocked(attempt.request_id);
         attempt.provider = provider;
+        attempt.request = BuildRequestLocked(attempt.request_id);
         in_flight_revision = attempt.context_revision;
       }
     }
@@ -221,10 +243,9 @@ struct Agent::Impl {
         staged.decision_id = next_decision_id++;
         staged.request_id = attempt.request_id;
         staged.context_revision = attempt.context_revision;
+        staged.registry_version = registry.version();
         staged.assistant = result.completion.ToAssistantMessage();
-        for (const CommandCall& call : result.completion.command_calls) {
-          staged.command_call_ids.push_back(call.id);
-        }
+        staged.command_calls = result.completion.command_calls;
         result.decision_id = staged.decision_id;
         pending.push_back(std::move(staged));
       }
@@ -236,7 +257,8 @@ struct Agent::Impl {
         result.completion.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
         log_event::kDecisionCompleted,
         "status=" + ToString(result.completion.status) +
-            ", commands=" + std::to_string(result.completion.command_calls.size()) +
+            ", commands=" +
+            std::to_string(result.completion.command_calls.size()) +
             ", tokens=" + std::to_string(result.completion.usage.total_tokens) +
             ", attempts=" + std::to_string(result.completion.http_attempts) +
             ", decision_id=" + std::to_string(result.decision_id) +
@@ -295,9 +317,8 @@ struct Agent::Impl {
   }
 };
 
-Agent::Agent(std::shared_ptr<IModelProvider> provider, AgentConfig config)
+Agent::Agent(AgentConfig config)
     : impl_(std::make_unique<Impl>(std::move(config.context))) {
-  impl_->provider = std::move(provider);
   impl_->id = std::move(config.id);
   impl_->model = std::move(config.model);
   impl_->system_prompt = std::move(config.system_prompt);
@@ -312,11 +333,19 @@ Agent::Agent(std::shared_ptr<IModelProvider> provider, AgentConfig config)
           LogContext{impl_->id, 0});
 }
 
+Agent::Agent(std::shared_ptr<IModelProvider> provider, AgentConfig config)
+    : Agent(std::move(config)) {
+  SetProvider(std::move(provider));
+}
+
 Agent::~Agent() {
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->closed = true;
     impl_->stopping = true;
+    for (Impl::Pending& pending : impl_->pending) {
+      pending.live->closed = true;
+    }
   }
   impl_->work_cv.notify_all();
   if (impl_->worker.joinable()) {
@@ -324,19 +353,41 @@ Agent::~Agent() {
   }
 }
 
-void Agent::SetSystemPrompt(std::string prompt) {
+ConfigOutcome Agent::SetProvider(std::shared_ptr<IModelProvider> provider) {
+  if (!provider) {
+    return {ConfigStatus::InvalidProvider, "provider must not be null"};
+  }
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->system_prompt = std::move(prompt);
+  if (impl_->closed) {
+    return {ConfigStatus::AgentClosed, "agent is closed"};
+  }
+  if (impl_->in_flight_revision.has_value()) {
+    return {ConfigStatus::AgentBusy,
+            "cannot change the provider while a decision is in flight"};
+  }
+  impl_->provider = std::move(provider);
+  return {};
 }
 
-void Agent::SetCommands(std::vector<CommandDefinition> commands) {
+ConfigOutcome Agent::SetModel(std::string model) {
+  if (model.empty()) {
+    return {ConfigStatus::InvalidModel, "model must not be empty"};
+  }
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->commands = std::move(commands);
-}
-
-void Agent::SetModel(std::string model) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->closed) {
+    return {ConfigStatus::AgentClosed, "agent is closed"};
+  }
   impl_->model = std::move(model);
+  return {};
+}
+
+ConfigOutcome Agent::SetSystemPrompt(std::string prompt) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->closed) {
+    return {ConfigStatus::AgentClosed, "agent is closed"};
+  }
+  impl_->system_prompt = std::move(prompt);
+  return {};
 }
 
 std::string Agent::model() const {
@@ -344,9 +395,91 @@ std::string Agent::model() const {
   return impl_->model;
 }
 
-std::vector<CommandDefinition> Agent::commands() const {
+CommandRegistrationResult Agent::RegisterCommandErased(
+    RegisteredCommand command) {
+  const std::string name = command.definition.name;
+  const std::shared_ptr<ILogger> log_sink = impl_->logger;
+  const std::string agent_id = impl_->id;
+
+  CommandRegistrationResult result;
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->closed) {
+      result = {RegistrationStatus::AgentClosed, "agent is closed"};
+    } else if (impl_->in_flight_revision.has_value() ||
+               !impl_->pending.empty()) {
+      result = {RegistrationStatus::AgentBusy,
+                "commands cannot change while a decision is in flight or "
+                "awaiting results"};
+    } else {
+      result = impl_->registry.Add(std::move(command));
+    }
+  }
+
+  if (result.ok()) {
+    EmitLog(log_sink, LogLevel::Info, log_event::kCommandRegistered,
+            "command=" + name +
+                ", commands=" + std::to_string(impl_->registry.size()),
+            LogContext{agent_id, 0});
+  } else {
+    EmitLog(log_sink, LogLevel::Warning,
+            log_event::kCommandRegistrationRejected,
+            "command=" + name, LogContext{agent_id, 0});
+  }
+  return result;
+}
+
+CommandRegistrationResult Agent::UnregisterCommand(std::string_view name) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  return impl_->commands;
+  if (impl_->closed) {
+    return {RegistrationStatus::AgentClosed, "agent is closed"};
+  }
+  if (impl_->in_flight_revision.has_value() || !impl_->pending.empty()) {
+    return {RegistrationStatus::AgentBusy,
+            "commands cannot change while a decision is in flight or awaiting "
+            "results"};
+  }
+  if (!impl_->registry.Remove(name)) {
+    return {RegistrationStatus::NotRegistered,
+            "no command named '" + std::string(name) + "' is registered"};
+  }
+  return {};
+}
+
+CommandRegistrationResult Agent::ClearCommands() {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->closed) {
+    return {RegistrationStatus::AgentClosed, "agent is closed"};
+  }
+  if (impl_->in_flight_revision.has_value() || !impl_->pending.empty()) {
+    return {RegistrationStatus::AgentBusy,
+            "commands cannot change while a decision is in flight or awaiting "
+            "results"};
+  }
+  impl_->registry.Clear();
+  return {};
+}
+
+std::vector<CommandDefinition> Agent::Commands() const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->registry.Definitions();
+}
+
+void Agent::SetCommands(std::vector<CommandDefinition> commands) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->registry.Clear();
+  for (CommandDefinition& definition : commands) {
+    RegisteredCommand command;
+    command.definition = std::move(definition);
+    const std::string name = command.definition.name;
+    command.bind = [name](const std::string&) {
+      CommandBinding binding;
+      binding.error = "command '" + name +
+                      "' was registered as a definition only (SetCommands)";
+      return binding;
+    };
+    impl_->registry.Add(std::move(command));
+  }
 }
 
 void Agent::UpdateContext(ContextUpdate update) {
@@ -370,12 +503,6 @@ std::future<DecisionResult> Agent::DecideAsync() {
   auto promise = std::make_shared<std::promise<DecisionResult>>();
   std::future<DecisionResult> future = promise->get_future();
 
-  if (!impl_->provider) {
-    promise->set_value(
-        Refused(DecisionStatus::Closed, {}, "agent has no provider"));
-    return future;
-  }
-
   const Impl::Attempt attempt = impl_->BeginAttempt();
   if (!attempt.started) {
     promise->set_value(attempt.refusal);
@@ -394,7 +521,8 @@ std::future<DecisionResult> Agent::DecideAsync() {
         // object.
         result = impl->FinishAttempt(attempt, std::move(completion));
       } catch (const std::exception& error) {
-        result = impl->AbortAttempt(attempt, std::string("decision worker ", "failed: ") + error.what());
+        result = impl->AbortAttempt(
+            attempt, std::string("decision worker failed: ") + error.what());
       } catch (...) {
         result = impl->AbortAttempt(attempt, "decision worker failed");
       }
@@ -427,8 +555,58 @@ std::future<DecisionResult> Agent::DecideAsync() {
   return future;
 }
 
+PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->closed) {
+    return {PrepareStatus::Closed, {}, "agent is closed"};
+  }
+  const Impl::Pending* pending = impl_->FindPendingLocked(decision_id);
+  if (pending == nullptr) {
+    return {PrepareStatus::UnknownDecision, {},
+            "no decision with that id is awaiting results"};
+  }
+  if (pending->command_calls.empty()) {
+    return {PrepareStatus::NoCommands, {},
+            "the decision contains no command calls"};
+  }
+  if (pending->registry_version != impl_->registry.version()) {
+    return {PrepareStatus::RegistryChanged, {},
+            "the registered commands changed after this decision was taken"};
+  }
+
+  const std::weak_ptr<Liveness> live = pending->live;
+  PrepareResult result;
+  result.commands.reserve(pending->command_calls.size());
+
+  for (const CommandCall& call : pending->command_calls) {
+    const RegisteredCommand* command = impl_->registry.Find(call.name);
+    if (command == nullptr) {
+      result.status = PrepareStatus::InvalidArguments;
+      result.error = "command '" + call.name + "' is not registered";
+      result.commands.clear();
+      return result;
+    }
+    CommandBinding binding = command->bind(call.arguments_json);
+    if (!binding.ok) {
+      result.status = PrepareStatus::InvalidArguments;
+      result.error = "command '" + call.name + "': " + binding.error;
+      result.commands.clear();
+      return result;
+    }
+    result.commands.emplace_back(
+        call.id, call.name, std::move(binding.invoke),
+        [live]() {
+          const std::shared_ptr<Liveness> token = live.lock();
+          return token != nullptr && !token->closed.load();
+        });
+  }
+
+  result.status = PrepareStatus::Ok;
+  return result;
+}
+
 RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
-                                       std::vector<CommandResult> results) {
+                                          std::vector<CommandResult> results) {
   std::unique_lock<std::mutex> lock(impl_->mutex);
   const std::shared_ptr<ILogger> logger = impl_->logger;
   const std::string id = impl_->id;
@@ -455,15 +633,19 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   }
   request_id = pending->request_id;
 
-  // Every command call needs exactly one result, and nothing else: a decision is
-  // recorded as a whole or not at all.
+  // Every command call needs exactly one matching result, and nothing else: a
+  // decision is recorded as a whole or not at all.
+  if (results.size() != pending->command_calls.size()) {
+    reject("results do not cover every command call exactly once");
+    return RecordOutcome::IncompleteResults;
+  }
   std::vector<Message> result_messages;
-  result_messages.reserve(pending->command_call_ids.size());
-  for (const std::string& call_id : pending->command_call_ids) {
+  result_messages.reserve(pending->command_calls.size());
+  for (const CommandCall& call : pending->command_calls) {
     const CommandResult* match = nullptr;
     std::size_t matches = 0;
     for (const CommandResult& candidate : results) {
-      if (candidate.command_call_id == call_id) {
+      if (candidate.command_call_id == call.id) {
         match = &candidate;
         ++matches;
       }
@@ -472,12 +654,11 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
       reject("results do not cover every command call exactly once");
       return RecordOutcome::IncompleteResults;
     }
+    if (match->name != call.name) {
+      reject("a result names a different command than the call did");
+      return RecordOutcome::NameMismatch;
+    }
     result_messages.push_back(Message::CommandResultMessage(*match));
-  }
-  if (results.size() != pending->command_call_ids.size()) {
-    // Extra results, or results for a call that was never made.
-    reject("results do not cover every command call exactly once");
-    return RecordOutcome::IncompleteResults;
   }
 
   DecisionRecord record;
@@ -486,6 +667,9 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   const std::string record_revision = pending->context_revision;
   record.assistant = pending->assistant;
   record.command_results = std::move(result_messages);
+
+  // The decision is committed; any prepared command for it is now stale.
+  pending->live->closed = true;
   impl_->context.AppendDecision(std::move(record));
   impl_->pending.erase(
       std::remove_if(impl_->pending.begin(), impl_->pending.end(),
@@ -497,8 +681,9 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   lock.unlock();
 
   EmitLog(logger, LogLevel::Info, log_event::kDecisionRecorded,
-          "decision_id=" + std::to_string(decision_id) + ", results=" +
-              std::to_string(results.size()) + ", rev=" + record_revision,
+          "decision_id=" + std::to_string(decision_id) +
+              ", results=" + std::to_string(results.size()) +
+              ", rev=" + record_revision,
           LogContext{id, request_id});
   return RecordOutcome::Recorded;
 }
@@ -511,6 +696,8 @@ bool Agent::DiscardDecision(std::uint64_t decision_id) {
   for (const Impl::Pending& candidate : impl_->pending) {
     if (candidate.decision_id == decision_id) {
       request_id = candidate.request_id;
+      // Invalidate any already-prepared command for this decision.
+      candidate.live->closed = true;
       break;
     }
   }
@@ -565,6 +752,9 @@ void Agent::Close() {
   std::unique_lock<std::mutex> lock(impl_->mutex);
   const bool was_open = !impl_->closed;
   impl_->closed = true;
+  for (Impl::Pending& pending : impl_->pending) {
+    pending.live->closed = true;
+  }
   const std::shared_ptr<ILogger> logger = impl_->logger;
   const std::string id = impl_->id;
   lock.unlock();

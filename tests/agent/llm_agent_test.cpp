@@ -113,11 +113,13 @@ ContextUpdate Update(std::string revision, std::string context = "Minute 62.") {
   return update;
 }
 
-CommandResult ResultFor(const std::string& call_id) {
+CommandResult ResultFor(const std::string& call_id,
+                      const std::string& name = "set_pressing_intensity") {
   CommandResult result;
   result.command_call_id = call_id;
-  result.name = "set_pressing_intensity";
-  result.content_json = R"({"applied":true})";
+  result.name = name;
+  result.outcome.success = true;
+  result.outcome.content_json = R"({"applied":true})";
   return result;
 }
 
@@ -306,7 +308,7 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
   agent.SetModel("another-model");
   agent.SetCommands({});
   EXPECT_EQ(agent.model(), "another-model");
-  EXPECT_TRUE(agent.commands().empty());
+  EXPECT_TRUE(agent.Commands().empty());
 
   const DecisionResult decision = Decide(agent, Update("rev-5"));
   ASSERT_TRUE(decision.completion.IsSuccess());
@@ -411,8 +413,10 @@ TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
   // The game may execute in whatever order it likes (here reversed); the
   // transcript is normalized to the order the model asked in, so every tool
   // turn sits next to its call in a deterministic position.
-  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id,
-                                    {ResultFor("call_b"), ResultFor("call_a")}),
+  EXPECT_EQ(agent.RecordCommandResults(
+                decision.decision_id,
+                {ResultFor("call_b", "set_defensive_line"),
+                 ResultFor("call_a")}),
             RecordOutcome::Recorded);
 
   // Keep the snapshot alive: ContextSnapshot() returns a copy.

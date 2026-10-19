@@ -94,8 +94,16 @@ inline constexpr std::string_view kRequestFailed = "provider.request_failed";
 inline constexpr std::string_view kRequirementDowngraded =
     "provider.requirement_downgraded";
 
+// Command registration and preparation.
+inline constexpr std::string_view kCommandRegistered = "commands.registered";
+inline constexpr std::string_view kCommandRegistrationRejected =
+    "commands.registration_rejected";
+inline constexpr std::string_view kCommandsPrepared = "commands.prepared";
+inline constexpr std::string_view kCommandsPrepareRejected =
+    "commands.prepare_rejected";
+
 // Validation.
-inline constexpr std::string_view kValidationFailed = "tools.validation_failed";
+inline constexpr std::string_view kValidationFailed = "commands.validation_failed";
 
 }  // namespace log_event
 

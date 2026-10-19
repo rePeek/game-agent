@@ -85,7 +85,7 @@ CommandResult ResultFor(const std::string& call_id) {
   CommandResult result;
   result.command_call_id = call_id;
   result.name = "set_pressing_intensity";
-  result.content_json = R"({"applied":true})";
+  result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
   return result;
 }
 

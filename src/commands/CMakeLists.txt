@@ -16,6 +16,8 @@ target_sources(llm-commands
         validation.cpp
         arguments.cpp
         schema.cpp
+        registry.cpp
+        prepared_command.cpp
 )
 
 target_link_libraries(llm-commands

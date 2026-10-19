@@ -167,8 +167,8 @@ std::vector<llm::CommandResult> ExecuteBatch(
     llm::CommandResult result;
     result.command_call_id = call.id;
     result.name = call.name;
-    result.content_json = R"({"applied":true})";
-    result.is_error = false;
+    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
+    result.outcome.success = true;
     results.push_back(std::move(result));
   }
   return results;

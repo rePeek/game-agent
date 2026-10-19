@@ -181,7 +181,8 @@ class Param {
   Param& Optional() { return Required(false); }
 
   Param& Default(T value) {
-    default_json_ = CommandJsonText(value);
+    default_value_ = std::move(value);
+    default_json_ = CommandJsonText(*default_value_);
     required_ = false;
     return *this;
   }
@@ -233,6 +234,9 @@ class Param {
 
   const std::string& name() const { return name_; }
 
+  /// The declared default, if any. Used by argument binding.
+  const std::optional<T>& default_value() const { return default_value_; }
+
   ParameterDescriptor ToDescriptor() const {
     ParameterDescriptor descriptor;
     descriptor.name = name_;
@@ -255,6 +259,7 @@ class Param {
   std::string description_;
   bool required_ = false;
   std::optional<std::string> default_json_;
+  std::optional<T> default_value_;
   std::optional<double> minimum_;
   std::optional<double> maximum_;
   std::optional<std::int64_t> min_length_;
@@ -273,6 +278,15 @@ class CommandParameters {
       : params_(std::move(params)...) {}
 
   std::tuple<Param<Args>...> params_;
+
+  /// The declared default of each parameter, in declaration order.
+  std::tuple<std::optional<Args>...> Defaults() const {
+    return std::apply(
+        [](const Param<Args>&... param) {
+          return std::make_tuple(param.default_value()...);
+        },
+        params_);
+  }
 
   std::vector<ParameterDescriptor> Descriptors() const {
     return std::apply(

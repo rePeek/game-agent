@@ -52,7 +52,7 @@ DecisionRecord MakeDecision(const DecisionSpec& spec) {
   CommandResult applied;
   applied.command_call_id = call.id;
   applied.name = call.name;
-  applied.content_json = R"({"applied":true})";
+  applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
   record.command_results = {Message::CommandResultMessage(applied)};
   return record;
 }
@@ -156,7 +156,7 @@ TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
     CommandResult result;
     result.command_call_id = call.id;
     result.name = call.name;
-    result.content_json = R"({"applied":true})";
+    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
     record.command_results.push_back(Message::CommandResultMessage(result));
   }
   ASSERT_EQ(record.MessageCount(), 3u);

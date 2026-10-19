@@ -103,7 +103,7 @@ CommandResult ResultFor(const std::string& call_id, const std::string& name) {
   CommandResult result;
   result.command_call_id = call_id;
   result.name = name;
-  result.content_json = R"({"applied":true})";
+  result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
   return result;
 }
 

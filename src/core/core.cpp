@@ -46,7 +46,7 @@ Message Message::AssistantCommandCalls(std::vector<CommandCall> calls) {
 Message Message::CommandResultMessage(const llm::CommandResult& result) {
   Message message;
   message.role = Role::Tool;
-  message.content = result.content_json;
+  message.content = result.outcome.content_json;
   message.command_call_id = result.command_call_id;
   message.name = result.name;
   return message;

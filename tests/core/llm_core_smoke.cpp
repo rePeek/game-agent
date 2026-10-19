@@ -38,7 +38,7 @@ int main() {
   llm::CommandResult tool_result;
   tool_result.command_call_id = "call_001";
   tool_result.name = "set_pressing_intensity";
-  tool_result.content_json = R"({"applied":true})";
+  tool_result.outcome.success = true; tool_result.outcome.content_json = R"({"applied":true})";
 
   llm::ModelRequest request;
   request.model = "gpt-5.6";

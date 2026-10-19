@@ -221,12 +221,12 @@ TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
   CommandResult applied;
   applied.command_call_id = "call_001";
   applied.name = "set_pressing_intensity";
-  applied.content_json = R"({"applied":true})";
+  applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
 
   CommandResult applied_second;
   applied_second.command_call_id = "call_002";
   applied_second.name = "set_defensive_line";
-  applied_second.content_json = R"({"applied":true})";
+  applied_second.outcome.success = true; applied_second.outcome.content_json = R"({"applied":true})";
 
   ModelRequest request;
   request.model = models::kGpt56;
@@ -820,7 +820,7 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
     CommandResult applied;
     applied.command_call_id = call.id;
     applied.name = call.name;
-    applied.content_json = R"({"applied":true})";
+    applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
     second.messages.push_back(Message::CommandResultMessage(applied));
   }
   second.messages.push_back(Message::User("Opponent switched to a low block."));
