@@ -12,8 +12,10 @@
 /// registers and the model asks to run. The OpenAI wire protocol still calls
 /// these "tools"; that translation lives entirely in the provider.
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace llm {
@@ -84,5 +86,12 @@ enum class FinishReason {
 /// values; these are only for logs, errors and test failure messages.
 std::string ToString(Role role);
 std::string ToString(FinishReason reason);
+
+/// A deliberately simple token estimate: roughly four characters per token.
+///
+/// It exists only to bound a request before it is sent and is documented as
+/// approximate on purpose; it is not a model-specific tokenizer and callers
+/// must not treat it as billing-accurate.
+std::size_t EstimateTokens(std::string_view text);
 
 }  // namespace llm

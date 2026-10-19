@@ -252,6 +252,15 @@ std::string ToString(ErrorKind kind) {
   }
   return "unknown";
 }
+std::size_t EstimateTokens(std::string_view text) {
+  if (text.empty()) {
+    return 0;
+  }
+  // Four characters per token is the usual rule of thumb, plus one so even a
+  // tiny non-empty message is not counted as free.
+  return text.size() / 4 + 1;
+}
+
 
 void EmitLog(const std::shared_ptr<ILogger>& logger,
              LogLevel level,

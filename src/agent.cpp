@@ -110,6 +110,8 @@ struct Agent::Impl {
     /// Registry version the decision was taken with; preparing against a
     /// changed registry is refused.
     std::uint64_t registry_version = 0;
+    /// The framing the application supplied when the decision started.
+    std::string decision_context;
     Message assistant;
     std::vector<CommandCall> command_calls;  // in call order
     std::shared_ptr<Liveness> live = std::make_shared<Liveness>();
@@ -125,6 +127,8 @@ struct Agent::Impl {
     /// Provider snapshotted when the attempt starts, so swapping the provider
     /// while a decision is in flight cannot change what runs.
     std::shared_ptr<IModelProvider> provider;
+    /// Framing snapshot taken with the request.
+    std::string decision_context;
     ModelRequest request;
     DecisionResult refusal;  // valid when !started
   };
@@ -147,11 +151,34 @@ struct Agent::Impl {
 
   /// The request this agent would send for the current context: the rendered
   /// history plus this agent's system prompt, commands and model parameters.
-  ModelRequest BuildRequestLocked(std::uint64_t request_id) const {
+  ModelRequest BuildRequestLocked(std::uint64_t request_id,
+                                  bool* exceeds_budget) const {
     ModelRequest request;
     request.model = model;
 
-    const RenderedContext rendered = context.Render();
+    const std::vector<CommandDefinition> commands = registry.Definitions();
+    // The token budget covers everything the provider will receive: the system
+    // prompt, the command schemas and the rendered transcript.
+    std::size_t fixed_tokens =
+        system_prompt.empty() ? 0 : EstimateTokens(system_prompt);
+    for (const CommandDefinition& command : commands) {
+      fixed_tokens += EstimateTokens(command.name) +
+                      EstimateTokens(command.description) +
+                      EstimateTokens(command.parameters_schema_json);
+    }
+
+    RenderBudget budget;
+    budget.fixed_tokens = fixed_tokens;
+    const std::size_t configured = context.config().max_input_tokens;
+    if (configured > 0) {
+      const std::size_t reserved = context.config().reserved_output_tokens;
+      budget.max_input_tokens =
+          configured > reserved ? configured - reserved : 1;
+    }
+
+    const RenderedContext rendered = context.Render(budget);
+    *exceeds_budget = rendered.exceeds_budget;
+
     request.messages.reserve(rendered.messages.size() + 1);
     if (!system_prompt.empty()) {
       request.messages.push_back(Message::System(system_prompt));
@@ -159,7 +186,7 @@ struct Agent::Impl {
     request.messages.insert(request.messages.end(), rendered.messages.begin(),
                             rendered.messages.end());
 
-    request.commands = registry.Definitions();
+    request.commands = commands;
     request.command_choice = CommandChoice::Required();
     request.max_tokens = max_output_tokens;
     request.max_command_calls = max_command_calls;
@@ -195,12 +222,25 @@ struct Agent::Impl {
                         : "a decision is still awaiting command results; call "
                           "RecordCommandResults or DiscardDecision first");
       } else {
-        attempt.started = true;
-        attempt.context_revision = context.context_revision();
-        attempt.request_id = next_request_id++;
-        attempt.provider = provider;
-        attempt.request = BuildRequestLocked(attempt.request_id);
-        in_flight_revision = attempt.context_revision;
+        const std::string revision = context.context_revision();
+        const std::string decision_context = context.decision_context();
+        const std::uint64_t request_id = next_request_id++;
+        bool exceeds_budget = false;
+        ModelRequest request = BuildRequestLocked(request_id, &exceeds_budget);
+        if (exceeds_budget) {
+          attempt.refusal = Refused(
+              DecisionStatus::ContextTooLarge, revision,
+              "the rendered context, system prompt and command schemas exceed "
+              "the configured input token budget");
+        } else {
+          attempt.started = true;
+          attempt.context_revision = revision;
+          attempt.decision_context = std::move(decision_context);
+          attempt.request_id = request_id;
+          attempt.provider = provider;
+          attempt.request = std::move(request);
+          in_flight_revision = revision;
+        }
       }
     }
 
@@ -244,6 +284,7 @@ struct Agent::Impl {
         staged.request_id = attempt.request_id;
         staged.context_revision = attempt.context_revision;
         staged.registry_version = registry.version();
+        staged.decision_context = attempt.decision_context;
         staged.assistant = result.completion.ToAssistantMessage();
         staged.command_calls = result.completion.command_calls;
         result.decision_id = staged.decision_id;
@@ -664,6 +705,7 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   DecisionRecord record;
   record.decision_id = pending->decision_id;
   record.context_revision = pending->context_revision;
+  record.decision_context = pending->decision_context;
   const std::string record_revision = pending->context_revision;
   record.assistant = pending->assistant;
   record.command_results = std::move(result_messages);

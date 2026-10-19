@@ -40,10 +40,11 @@ namespace llm {
 /// Agent-level outcome of a decision attempt. `completion` is only meaningful
 /// when this is Completed.
 enum class DecisionStatus {
-  Completed,      // the provider answered; branch on completion.status
-  NotConfigured,  // no provider or no model has been set yet
-  Busy,           // a previous decision is still in flight or awaiting results
-  Closed,         // the agent was closed
+  Completed,        // the provider answered; branch on completion.status
+  NotConfigured,    // no provider or no model has been set yet
+  Busy,             // a previous decision is still in flight or awaiting
+  ContextTooLarge,  // the request would exceed the input token budget
+  Closed,           // the agent was closed
 };
 
 struct DecisionResult {
@@ -200,6 +201,10 @@ class Agent final {
   bool IsClosed() const;
   std::size_t InFlightDecisionCount() const;
   std::size_t PendingDecisionCount() const;
+  /// Waits until no provider call is in flight. This is deliberately *not*
+  /// the same as the decision future being ready: a decision that has answered
+  /// is idle but still awaiting results, and a queued task may not have started
+  /// yet. Use the returned future for the result and this for quiescence.
   bool WaitForIdle(std::chrono::milliseconds timeout) const;
 
   /// Refuses further decisions: a submitted-but-unfinished decision is answered

@@ -37,6 +37,7 @@ struct DecisionSpec {
   std::string command_name = "set_pressing_intensity";
   std::string arguments = R"({"level":3})";
   std::string assistant_text;
+  std::string decision_context;
 };
 
 DecisionRecord MakeDecision(const DecisionSpec& spec) {
@@ -45,6 +46,7 @@ DecisionRecord MakeDecision(const DecisionSpec& spec) {
   DecisionRecord record;
   record.decision_id = spec.id;
   record.context_revision = "rev-" + std::to_string(spec.id);
+  record.decision_context = spec.decision_context;
   record.assistant = Message::AssistantCommandCalls({call});
   if (!spec.assistant_text.empty()) {
     record.assistant.content = spec.assistant_text;
@@ -280,6 +282,67 @@ TEST(LlmContextTest, RevisionsTrackTheNewestUpdateOnly) {
   EXPECT_EQ(context.context_revision(), "rev-70");
   EXPECT_EQ(context.decisions()[0].context_revision, "rev-1");
 }
+
+TEST(LlmContextTest, DecisionContextIsStoredAndRenderedWithItsDecision) {
+  Context context;
+  context.SetContextUpdate(Update("Minute 70."));
+  DecisionSpec spec;
+  spec.decision_context = "Minute 62, 1-1, they press high.";
+  context.AppendDecision(MakeDecision(spec));
+
+  const RenderedContext rendered = context.Render();
+  ASSERT_EQ(rendered.messages.size(), 4u);
+  EXPECT_EQ(rendered.messages[0].role, Role::User);
+  EXPECT_NE(rendered.messages[0].content.find("Decision context"),
+            std::string::npos);
+  EXPECT_NE(rendered.messages[0].content.find("Minute 62"), std::string::npos);
+  EXPECT_EQ(rendered.messages[1].role, Role::Assistant);
+  EXPECT_EQ(rendered.messages[2].role, Role::Tool);
+  EXPECT_EQ(rendered.messages[3].role, Role::User);
+}
+
+TEST(LlmContextTest, MemoryCapDropsTheOldestDecisions) {
+  ContextConfig config;
+  config.max_memory_decisions = 2;
+  Context context(config);
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    context.AppendDecision(MakeDecision(DecisionSpec{id}));
+  }
+
+  EXPECT_EQ(context.decision_count(), 2u);
+  EXPECT_EQ(context.decisions()[0].decision_id, 3u);
+  EXPECT_EQ(context.decisions()[1].decision_id, 4u);
+}
+
+TEST(LlmContextTest, TokenBudgetDropsOldestDecisionsAndReportsOvershoot) {
+  Context context;
+  context.SetContextUpdate(Update("now"));
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    DecisionSpec spec;
+    spec.id = id;
+    spec.arguments = R"({"level":3,"note":"aaaaaaaaaaaaaaaa"})";
+    context.AppendDecision(MakeDecision(spec));
+  }
+
+  RenderBudget budget;
+  budget.max_input_tokens = 60;
+  const RenderedContext rendered = context.Render(budget);
+  EXPECT_FALSE(rendered.exceeds_budget);
+  EXPECT_GE(rendered.decisions_included, 1u);
+  EXPECT_LT(rendered.decisions_included, 4u)
+      << "the budget must drop the oldest decisions";
+  // The newest decision is always the one that survives.
+  ASSERT_FALSE(rendered.messages.empty());
+  EXPECT_GT(rendered.estimated_tokens, 0u);
+
+  RenderBudget impossible;
+  impossible.max_input_tokens = 1;
+  impossible.fixed_tokens = 1000;
+  const RenderedContext too_large = context.Render(impossible);
+  EXPECT_TRUE(too_large.exceeds_budget);
+  EXPECT_GT(too_large.estimated_tokens, impossible.max_input_tokens);
+}
+
 
 }  // namespace
 }  // namespace llm

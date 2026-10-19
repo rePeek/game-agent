@@ -489,5 +489,56 @@ TEST(LlmAgentTest, FailedResultsAreRecordedAsExecutedFacts) {
   EXPECT_EQ(message.content, R"({"ok":false,"error":"rejected_by_referee"})");
 }
 
+TEST(LlmAgentTest, ContextTooLargeIsRefusedBeforeSendingAnything) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  AgentConfig config = DefaultConfig();
+  config.context.max_input_tokens = 8;
+  Agent agent(provider, config);
+  agent.SetCommands({PressingTool()});
+
+  ContextUpdate update = Update("rev-62");
+  update.current_context =
+      "A very long match description that cannot possibly fit eight tokens.";
+  agent.UpdateContext(std::move(update));
+
+  const DecisionResult decision = agent.DecideAsync().get();
+  EXPECT_EQ(decision.status, DecisionStatus::ContextTooLarge);
+  EXPECT_TRUE(provider->requests.empty())
+      << "an over-budget request is never sent";
+  EXPECT_FALSE(agent.IsBusy());
+}
+
+TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  provider->next = SuccessfulBatch();
+  Agent agent(provider, DefaultConfig());
+  agent.SetCommands({PressingTool()});
+
+  ContextUpdate update = Update("rev-62");
+  update.decision_context = "Minute 62, 1-1, they press high.";
+  agent.UpdateContext(std::move(update));
+  const DecisionResult first = agent.DecideAsync().get();
+  ASSERT_TRUE(first.completion.IsSuccess());
+  EXPECT_EQ(agent.RecordCommandResults(first.decision_id,
+                                       {ResultFor("call_a")}),
+            RecordOutcome::Recorded);
+
+  const Context context = agent.ContextSnapshot();
+  ASSERT_EQ(context.decisions().size(), 1u);
+  EXPECT_EQ(context.decisions()[0].decision_context,
+            "Minute 62, 1-1, they press high.");
+
+  // The next request shows the framing that decision answered.
+  agent.UpdateContext(Update("rev-70"));
+  const DecisionResult second = agent.DecideAsync().get();
+  ASSERT_TRUE(second.completion.IsSuccess());
+  ASSERT_GE(provider->requests.size(), 2u);
+  const std::vector<Message>& messages = provider->requests[1].messages;
+  ASSERT_GE(messages.size(), 3u);
+  EXPECT_EQ(messages[1].role, Role::User);
+  EXPECT_NE(messages[1].content.find("Minute 62, 1-1"), std::string::npos);
+  EXPECT_EQ(messages[2].role, Role::Assistant);
+}
+
 }  // namespace
 }  // namespace llm
