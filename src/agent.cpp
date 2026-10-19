@@ -105,6 +105,9 @@ struct Agent::Impl {
     bool started = false;
     std::string context_revision;
     std::uint64_t request_id = 0;
+    /// Provider snapshotted when the attempt starts, so swapping the
+    /// provider while a decision is in flight cannot change what runs.
+    std::shared_ptr<IModelProvider> provider;
     ModelRequest request;
     DecisionResult refusal;  // valid when !started
   };
@@ -174,6 +177,7 @@ struct Agent::Impl {
         attempt.context_revision = context.context_revision();
         attempt.request_id = next_request_id++;
         attempt.request = BuildRequestLocked(attempt.request_id);
+        attempt.provider = provider;
         in_flight_revision = attempt.context_revision;
       }
     }
@@ -241,6 +245,26 @@ struct Agent::Impl {
     return result;
   }
 
+  /// Last-resort completion for a task that failed before it could stage.
+  /// The in-flight mark is cleared and the caller still receives a decision,
+  /// so a worker failure can never leave the agent permanently Busy.
+  DecisionResult AbortAttempt(const Attempt& attempt, std::string message) {
+    DecisionResult result;
+    result.context_revision = attempt.context_revision;
+    result.status = DecisionStatus::Completed;
+    result.completion = ProviderThrew(message);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      in_flight_revision.reset();
+      idle_cv.notify_all();
+    }
+    // The failure text is the worker's own, never model output.
+    EmitLog(logger, LogLevel::Error, log_event::kDecisionCompleted,
+            "status=provider error, decision_id=0",
+            LogContext{id, attempt.request_id});
+    return result;
+  }
+
   /// Runs queued decisions until the agent stops; accepted decisions are
   /// drained before the loop returns.
   void Run() {
@@ -258,7 +282,15 @@ struct Agent::Impl {
         task = std::move(tasks.front());
         tasks.pop_front();
       }
-      task();
+      try {
+        task();
+      } catch (...) {
+        // A task must never escape and kill the worker; clear the in-flight
+        // mark so a failure cannot leave the agent permanently Busy.
+        std::lock_guard<std::mutex> lock(mutex);
+        in_flight_revision.reset();
+        idle_cv.notify_all();
+      }
     }
   }
 };
@@ -350,18 +382,46 @@ std::future<DecisionResult> Agent::DecideAsync() {
     return future;
   }
 
-  {
+  try {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     Impl* impl = impl_.get();
     impl->tasks.push_back([impl, attempt, promise]() mutable {
-      CompletionResult completion =
-          CallProvider(impl->provider, attempt.request);
-      // The worker finishes against the Impl, never against the Agent object.
-      promise->set_value(impl->FinishAttempt(attempt, std::move(completion)));
+      DecisionResult result;
+      try {
+        CompletionResult completion =
+            CallProvider(attempt.provider, attempt.request);
+        // The worker finishes against the Impl, never against the Agent
+        // object.
+        result = impl->FinishAttempt(attempt, std::move(completion));
+      } catch (const std::exception& error) {
+        result = impl->AbortAttempt(attempt, std::string("decision worker ", "failed: ") + error.what());
+      } catch (...) {
+        result = impl->AbortAttempt(attempt, "decision worker failed");
+      }
+      try {
+        promise->set_value(std::move(result));
+      } catch (...) {
+        // The future is already satisfied or gone; nothing left to report.
+      }
     });
     if (!impl_->worker.joinable()) {
       impl_->worker = std::thread([impl = impl_.get()] { impl->Run(); });
     }
+  } catch (const std::exception& error) {
+    // Starting the worker failed: undo the reservation so the agent does not
+    // stay Busy forever, and answer the caller with a real result.
+    {
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      if (!impl_->tasks.empty()) {
+        impl_->tasks.pop_back();
+      }
+      impl_->in_flight_revision.reset();
+      impl_->idle_cv.notify_all();
+    }
+    promise->set_value(Refused(
+        DecisionStatus::Busy, attempt.context_revision,
+        std::string("could not start the decision worker: ") + error.what()));
+    return future;
   }
   impl_->work_cv.notify_all();
   return future;

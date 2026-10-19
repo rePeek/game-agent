@@ -213,6 +213,48 @@ void CheckSchemaSupported(const Json& schema,
       continue;
     }
 
+    if (it.key() == "enum") {
+      if (!it.value().is_array() || it.value().empty()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be a non-empty array");
+      }
+      continue;
+    }
+
+    if (it.key() == "required") {
+      if (!it.value().is_array()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be an array of property names");
+      } else {
+        for (const auto& name : it.value()) {
+          if (!name.is_string()) {
+            AddProblem(problems, ProblemKind::Schema,
+                       keyword + " must contain only strings");
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (it.key() == "minimum" || it.key() == "maximum") {
+      if (!it.value().is_number()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be a number");
+      }
+      continue;
+    }
+
+    if (it.key() == "minItems" || it.key() == "maxItems" ||
+        it.key() == "minLength" || it.key() == "maxLength") {
+      if (!it.value().is_number_unsigned()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be a non-negative integer");
+      }
+      continue;
+    }
+
+
     if (it.key() == "properties") {
       if (!it.value().is_object()) {
         AddProblem(problems, ProblemKind::Schema,
@@ -487,7 +529,26 @@ ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
     return report;
   }
 
+  std::vector<std::string> seen_names;
   for (const auto& tool : request.tools) {
+    bool duplicate_name = false;
+    for (const std::string& seen : seen_names) {
+      if (!tool.name.empty() && seen == tool.name) {
+        duplicate_name = true;
+        break;
+      }
+    }
+    if (!tool.name.empty()) {
+      seen_names.push_back(tool.name);
+    }
+    if (duplicate_name) {
+      ValidationIssue issue;
+      issue.tool_name = tool.name;
+      issue.kind = ValidationIssueKind::Schema;
+      issue.message = "is offered more than once in this request";
+      report.issues.push_back(std::move(issue));
+      continue;
+    }
     const Json schema =
         Json::parse(tool.parameters_schema_json, nullptr, false);
     if (schema.is_discarded()) {

@@ -427,5 +427,54 @@ TEST(LlmValidationTest, DuplicateToolCallIdsAreRejected) {
   EXPECT_TRUE(Validate(DefaultRequest(), calls, relaxed).ok);
 }
 
+TEST(LlmValidationTest, KnownKeywordsWithTheWrongValueShapeAreRefused) {
+  const JsonSchemaToolCallValidator validator;
+
+  // An 'enum' that is not an array would otherwise be silently ignored, and
+  // Success would claim a check that never happened.
+  const ValidationReport bad_enum = validator.ValidateToolSchemas(RequestWith(
+      {Tool("t", R"({"type":"object","properties":{"a":{"enum":"x"}}})")}));
+  EXPECT_FALSE(bad_enum.ok);
+  EXPECT_TRUE(bad_enum.HasSchemaIssues());
+  EXPECT_NE(bad_enum.Summary().find("non-empty array"), std::string::npos);
+
+  // A bound expressed as a string cannot be enforced numerically.
+  const ValidationReport bad_minimum = validator.ValidateToolSchemas(RequestWith(
+      {Tool("t",
+            R"({"type":"object","properties":{"a":{"type":"integer","minimum":"1"}}})")}));
+  EXPECT_FALSE(bad_minimum.ok);
+  EXPECT_NE(bad_minimum.Summary().find("must be a number"),
+            std::string::npos);
+
+  // minItems must be a non-negative integer, not a string or a float.
+  const ValidationReport bad_min_items = validator.ValidateToolSchemas(RequestWith(
+      {Tool("t",
+            R"({"type":"object","properties":{"a":{"type":"array","minItems":"1"}}})")}));
+  EXPECT_FALSE(bad_min_items.ok);
+  EXPECT_NE(bad_min_items.Summary().find("non-negative integer"),
+            std::string::npos);
+
+  // required must be an array of names.
+  const ValidationReport bad_required = validator.ValidateToolSchemas(RequestWith(
+      {Tool("t", R"({"type":"object","required":"a"})")}));
+  EXPECT_FALSE(bad_required.ok);
+  EXPECT_NE(bad_required.Summary().find("array of property names"),
+            std::string::npos);
+}
+
+TEST(LlmValidationTest, DuplicateToolDefinitionsAreRefused) {
+  const JsonSchemaToolCallValidator validator;
+  const ModelRequest request =
+      RequestWith({Tool("set_pressing_intensity", kPressingSchema),
+                   Tool("set_pressing_intensity", kPressingSchema)});
+
+  const ValidationReport report = validator.ValidateToolSchemas(request);
+  EXPECT_FALSE(report.ok);
+  EXPECT_TRUE(report.HasSchemaIssues());
+  EXPECT_NE(report.Summary().find("more than once"), std::string::npos)
+      << report.Summary();
+}
+
+
 }  // namespace
 }  // namespace llm
