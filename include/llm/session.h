@@ -23,7 +23,9 @@
 #include "result.h"
 #include "types.h"
 
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -90,6 +92,15 @@ class Session {
   /// the result pending until it is confirmed or discarded.
   DecisionResult Complete(ContextUpdate update);
 
+  /// The same decision, run on the session's own worker thread: submitting
+  /// never blocks, and the calling thread is free while the provider works.
+  ///
+  /// The returned future is always satisfied — Busy and Closed are reported as
+  /// DecisionStatus values, never as a broken promise or an exception. The
+  /// request is snapshotted at submit time, so later context updates cannot
+  /// change what was asked.
+  std::future<DecisionResult> CompleteAsync(ContextUpdate update);
+
   /// Confirms a pending decision with the results the application executed.
   /// The results must cover every tool call of that decision, exactly once;
   /// otherwise nothing is recorded and the pending decision stays.
@@ -100,19 +111,45 @@ class Session {
   /// rolled-back transaction, something the application chose not to apply).
   bool DiscardDecision(std::uint64_t decision_id);
 
+  /// Decisions the worker is currently asking the provider about.
+  std::size_t in_flight_decision_count() const;
+  /// Decisions whose provider call has returned, maybe on the worker thread.
   std::size_t pending_decision_count() const;
+  /// True while any decision is in flight or awaiting results.
+  bool busy() const;
+  /// Waits until nothing is in flight. Returns false if the wait timed out; a
+  /// game loop uses this instead of blocking on a future.
+  bool WaitForIdle(std::chrono::milliseconds timeout) const;
   std::vector<std::uint64_t> pending_decision_ids() const;
   /// Revision of the newest context update this session received.
   std::string current_revision() const;
 
   // --- lifetime -----------------------------------------------------------
   bool closed() const;
-  /// Refuses further decisions. Pending futures (see CompleteAsync) are
-  /// answered as Closed, and the destructor waits for in-flight work.
+  /// Refuses further decisions: a submitted-but-unfinished decision is
+  /// answered as Closed when it returns, and nothing is staged.
+  ///
+  /// Closing does not abort an HTTP request that is already running
+  /// (ITransport::Send is blocking); it only stops its result from being used.
+  /// The destructor joins the worker, so destroying a session can wait for the
+  /// provider's timeout. Call Close() early, or WaitForIdle(), when that
+  /// matters.
   void Close();
 
  private:
   struct State;
+  struct Attempt;
+
+  /// Applies the update and reserves the session for one decision, or returns
+  /// a refusal (Closed/Busy) without touching anything.
+  Attempt BeginAttempt(ContextUpdate update);
+  /// Clears the in-flight mark and stages the decision when it succeeded.
+  /// Static and state-taking so the worker never touches the Session object.
+  static DecisionResult FinishAttempt(const std::shared_ptr<State>& state,
+                                      const Attempt& attempt,
+                                      CompletionResult completion);
+  static void RunWorker(std::shared_ptr<State> state);
+
   std::shared_ptr<State> state_;
   std::shared_ptr<IModelProvider> provider_;
 };

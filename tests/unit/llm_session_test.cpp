@@ -1,8 +1,12 @@
 // Unit tests for llm::Session: provider injection, staging, atomic
 // confirmation and per-session isolation.
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,6 +58,45 @@ class ScriptedProvider : public IModelProvider {
     requests.push_back(request);
     return next;
   }
+};
+
+/// Blocks inside Complete() until the test releases it.
+class GatedProvider : public IModelProvider {
+ public:
+  CompletionResult next;
+
+  std::string Name() const override { return "gated"; }
+  CompletionResult Complete(const ModelRequest&) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ++calls_;
+    entered_cv_.notify_all();
+    release_cv_.wait(lock, [this] { return released_; });
+    return next;
+  }
+
+  /// Waits until the provider is inside Complete().
+  bool WaitUntilEntered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return entered_cv_.wait_for(lock, timeout, [this] { return calls_ > 0; });
+  }
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    release_cv_.notify_all();
+  }
+  int calls() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return calls_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable entered_cv_;
+  std::condition_variable release_cv_;
+  int calls_ = 0;
+  bool released_ = false;
 };
 
 ContextUpdate Update(std::string context, std::string revision) {
@@ -346,6 +389,176 @@ TEST(LlmSessionTest, ConfigurationIsMutable) {
   EXPECT_EQ(request.model, "gpt-4.1");
   EXPECT_TRUE(request.tools.empty());
   EXPECT_EQ(request.messages[0].content, "You are the assistant coach.");
+}
+
+// ---------------------------------------------------------------------------
+// CTX-3: asynchronous decisions
+// ---------------------------------------------------------------------------
+TEST(LlmSessionAsyncTest, SubmittingDoesNotBlockAndResolvesOnce) {
+  auto provider = std::make_shared<GatedProvider>();
+  provider->next = SuccessfulBatch();
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  auto session = CreateSession(provider, std::move(config));
+  session->SetTools({PressingTool()});
+
+  std::future<DecisionResult> future =
+      session->CompleteAsync(Update("Minute 62.", "rev-62"));
+
+  // The caller keeps running while the provider works.
+  EXPECT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+  EXPECT_EQ(session->in_flight_decision_count(), 1u);
+  EXPECT_TRUE(session->busy());
+  EXPECT_FALSE(session->WaitForIdle(std::chrono::milliseconds(0)));
+
+  provider->Release();
+  const DecisionResult decision = future.get();
+
+  EXPECT_EQ(decision.status, DecisionStatus::Completed);
+  EXPECT_TRUE(decision.completion.IsSuccess());
+  EXPECT_EQ(decision.decision_id, 1u);
+  EXPECT_EQ(decision.context_revision, "rev-62");
+  EXPECT_EQ(session->in_flight_decision_count(), 0u);
+  EXPECT_EQ(session->pending_decision_count(), 1u);
+  EXPECT_TRUE(session->WaitForIdle(std::chrono::milliseconds(0)));
+}
+
+TEST(LlmSessionAsyncTest, OnlyOneDecisionRunsAtATime) {
+  auto provider = std::make_shared<GatedProvider>();
+  provider->next = SuccessfulBatch();
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  auto session = CreateSession(provider, std::move(config));
+
+  std::future<DecisionResult> first =
+      session->CompleteAsync(Update("Minute 62.", "rev-62"));
+  ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+
+  // A second asynchronous decision is refused immediately.
+  const DecisionResult busy_async =
+      session->CompleteAsync(Update("Minute 63.", "rev-63")).get();
+  EXPECT_EQ(busy_async.status, DecisionStatus::Busy);
+  EXPECT_EQ(busy_async.decision_id, 0u);
+
+  // A synchronous decision is refused too: same rule, same bookkeeping.
+  const DecisionResult busy_sync =
+      session->Complete(Update("Minute 64.", "rev-64"));
+  EXPECT_EQ(busy_sync.status, DecisionStatus::Busy);
+
+  EXPECT_EQ(provider->calls(), 1);
+  // The refused updates were not applied.
+  EXPECT_EQ(session->current_revision(), "rev-62");
+
+  provider->Release();
+  EXPECT_TRUE(first.get().completion.IsSuccess());
+}
+
+TEST(LlmSessionAsyncTest, CloseDuringFlightDiscardsTheResult) {
+  auto provider = std::make_shared<GatedProvider>();
+  provider->next = SuccessfulBatch();
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  auto session = CreateSession(provider, std::move(config));
+
+  std::future<DecisionResult> future =
+      session->CompleteAsync(Update("Minute 62.", "rev-62"));
+  ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+
+  session->Close();
+  provider->Release();
+
+  const DecisionResult decision = future.get();  // always satisfied
+  EXPECT_EQ(decision.status, DecisionStatus::Closed);
+  EXPECT_EQ(decision.decision_id, 0u);
+  EXPECT_EQ(session->pending_decision_count(), 0u);
+  EXPECT_EQ(session->ContextSnapshot().decision_count(), 0u);
+}
+
+TEST(LlmSessionAsyncTest, SynchronousCloseStillAnswersTheFuture) {
+  auto provider = std::make_shared<GatedProvider>();
+  provider->next = SuccessfulBatch();
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  auto session = CreateSession(provider, std::move(config));
+
+  std::future<DecisionResult> future =
+      session->CompleteAsync(Update("Minute 62.", "rev-62"));
+  session->Close();
+  // Submitting after Close resolves immediately instead of hanging.
+  const DecisionResult refused =
+      session->CompleteAsync(Update("Minute 63.", "rev-63")).get();
+  EXPECT_EQ(refused.status, DecisionStatus::Closed);
+
+  provider->Release();
+  EXPECT_EQ(future.get().status, DecisionStatus::Closed);
+}
+
+TEST(LlmSessionAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
+  auto provider = std::make_shared<GatedProvider>();
+  provider->next = SuccessfulBatch();
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  config.system_prompt = "You are the head coach.";
+  auto session = CreateSession(provider, std::move(config));
+  session->SetTools({PressingTool()});
+
+  // Thread the gate open for the whole test: each decision resolves on its own.
+  provider->Release();
+  std::future<DecisionResult> first =
+      session->CompleteAsync(Update("Minute 62.", "rev-62"));
+  const DecisionResult first_decision = first.get();
+
+  ASSERT_EQ(
+      session->RecordToolResults(first_decision.decision_id,
+                                 {ResultFor("call_a"), ResultFor("call_b")}),
+      RecordOutcome::Recorded);
+
+  std::future<DecisionResult> second =
+      session->CompleteAsync(Update("Minute 70.", "rev-70"));
+  const DecisionResult second_decision = second.get();
+
+  EXPECT_EQ(second_decision.decision_id, 2u);
+  EXPECT_TRUE(second_decision.completion.IsSuccess());
+  EXPECT_EQ(session->ContextSnapshot().decision_count(), 1u);
+}
+
+TEST(LlmSessionAsyncTest, WorkerSurvivesRepeatedSessionLifetimes) {
+  for (int i = 0; i < 5; ++i) {
+    auto provider = std::make_shared<GatedProvider>();
+    provider->next = SuccessfulBatch();
+    SessionConfig config;
+    config.model = "gpt-5.6";
+    auto session = CreateSession(provider, std::move(config));
+    provider->Release();
+    EXPECT_TRUE(session->CompleteAsync(Update("Minute 1.", "rev-1"))
+                    .get()
+                    .completion.IsSuccess());
+    // The destructor joins the worker; no thread is left behind.
+  }
+  SUCCEED();
+}
+
+TEST(LlmSessionAsyncTest, ProviderErrorsAreReportedNotThrown) {
+  class ThrowingProvider : public IModelProvider {
+   public:
+    std::string Name() const override { return "throwing"; }
+    CompletionResult Complete(const ModelRequest&) override {
+      throw std::runtime_error("boom");
+    }
+  };
+
+  SessionConfig config;
+  config.model = "gpt-5.6";
+  auto session = CreateSession(std::make_shared<ThrowingProvider>(), config);
+
+  const DecisionResult decision =
+      session->Complete(Update("Minute 1.", "rev-1"));
+
+  EXPECT_EQ(decision.status, DecisionStatus::Completed);
+  EXPECT_EQ(decision.completion.status, CompletionStatus::ProviderError);
+  ASSERT_TRUE(decision.completion.error.has_value());
+  EXPECT_NE(decision.completion.ErrorMessage().find("boom"), std::string::npos);
+  EXPECT_EQ(session->pending_decision_count(), 0u);
 }
 
 }  // namespace

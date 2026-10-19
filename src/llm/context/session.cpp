@@ -1,25 +1,40 @@
 #include "llm/session.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace llm {
 
-/// State shared by the session and (from CTX-3 on) its background worker: the
-/// worker must never touch the Session object itself, so that a pending
-/// completion cannot outlive the object that started it.
+/// State shared by the session and its worker thread.
+///
+/// The worker only ever touches this object (never the Session), so a decision
+/// that is already running cannot reach a destroyed session.
 struct Session::State {
   mutable std::mutex mutex;
+  mutable std::condition_variable
+      work_cv;  // a task arrived, or we are stopping
+  mutable std::condition_variable idle_cv;  // nothing is in flight any more
+
   Context context;
   std::string system_prompt;
   std::string model;
   bool closed = false;
   std::uint64_t next_decision_id = 1;
+
+  /// Revision of the decision currently being asked about, if any.
+  std::optional<std::string> in_flight_revision;
 
   /// The single decision awaiting tool results, if any.
   struct Pending {
@@ -29,6 +44,11 @@ struct Session::State {
     std::vector<std::string> tool_call_ids;  // in call order
   };
   std::vector<Pending> pending;  // at most one in this version
+
+  // Worker plumbing.
+  std::thread worker;
+  std::deque<std::function<void()>> tasks;
+  bool stopping = false;
 
   explicit State(ContextConfig config) : context(std::move(config)) {}
 
@@ -43,6 +63,29 @@ struct Session::State {
 };
 
 namespace {
+
+CompletionResult ProviderThrew(const std::string& message) {
+  CompletionResult completion;
+  completion.status = CompletionStatus::ProviderError;
+  ModelError error;
+  error.kind = ErrorKind::Unknown;
+  error.message = message;
+  completion.error = std::move(error);
+  return completion;
+}
+
+/// Providers are supposed to report failures in the result, but a custom one
+/// may throw: neither path may let that escape into a game loop.
+CompletionResult CallProvider(const std::shared_ptr<IModelProvider>& provider,
+                              const ModelRequest& request) {
+  try {
+    return provider->Complete(request);
+  } catch (const std::exception& error) {
+    return ProviderThrew(std::string("provider threw: ") + error.what());
+  } catch (...) {
+    return ProviderThrew("provider threw an unknown error");
+  }
+}
 
 DecisionResult Refused(DecisionStatus status,
                        const std::string& revision,
@@ -60,6 +103,15 @@ DecisionResult Refused(DecisionStatus status,
 
 }  // namespace
 
+/// One accepted decision: the request is snapshotted on the submitting thread
+/// so later context updates cannot change what is being asked.
+struct Session::Attempt {
+  bool started = false;
+  std::string context_revision;
+  ModelRequest request;
+  DecisionResult refusal;  // valid when !started
+};
+
 Session::Session(std::shared_ptr<IModelProvider> provider, SessionConfig config)
     : state_(std::make_shared<State>(std::move(config.context))),
       provider_(std::move(provider)) {
@@ -70,7 +122,17 @@ Session::Session(std::shared_ptr<IModelProvider> provider, SessionConfig config)
   }
 }
 
-Session::~Session() = default;
+Session::~Session() {
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->closed = true;
+    state_->stopping = true;
+  }
+  state_->work_cv.notify_all();
+  if (state_->worker.joinable()) {
+    state_->worker.join();
+  }
+}
 
 void Session::SetTools(std::vector<ToolDefinition> tools) {
   std::lock_guard<std::mutex> lock(state_->mutex);
@@ -108,61 +170,132 @@ Context Session::ContextSnapshot() const {
   return state_->context;
 }
 
+Session::Attempt Session::BeginAttempt(ContextUpdate update) {
+  Attempt attempt;
+  std::lock_guard<std::mutex> lock(state_->mutex);
+
+  if (state_->closed) {
+    attempt.refusal =
+        Refused(DecisionStatus::Closed, state_->context.context_revision(),
+                "session is closed");
+    return attempt;
+  }
+  if (state_->in_flight_revision.has_value() || !state_->pending.empty()) {
+    attempt.refusal =
+        Refused(DecisionStatus::Busy, state_->context.context_revision(),
+                state_->in_flight_revision.has_value()
+                    ? "a decision is already in flight"
+                    : "a decision is still awaiting tool results; call "
+                      "RecordToolResults or DiscardDecision first");
+    return attempt;
+  }
+
+  state_->context.SetContextUpdate(std::move(update));
+  attempt.started = true;
+  attempt.context_revision = state_->context.context_revision();
+  attempt.request = state_->context.BuildRequest(state_->model);
+  state_->in_flight_revision = attempt.context_revision;
+  return attempt;
+}
+
+DecisionResult Session::FinishAttempt(const std::shared_ptr<State>& state,
+                                      const Attempt& attempt,
+                                      CompletionResult completion) {
+  DecisionResult result;
+  result.context_revision = attempt.context_revision;
+  result.status = DecisionStatus::Completed;
+  result.completion = std::move(completion);
+
+  std::lock_guard<std::mutex> lock(state->mutex);
+  state->in_flight_revision.reset();
+  state->idle_cv.notify_all();
+
+  if (state->closed) {
+    return Refused(DecisionStatus::Closed, attempt.context_revision,
+                   "session was closed while the decision was in flight");
+  }
+  if (!result.completion.IsSuccess()) {
+    return result;  // nothing to confirm, nothing to record
+  }
+
+  State::Pending pending;
+  pending.decision_id = state->next_decision_id++;
+  pending.context_revision = attempt.context_revision;
+  pending.assistant = result.completion.ToAssistantMessage();
+  for (const ToolCall& call : result.completion.tool_calls) {
+    pending.tool_call_ids.push_back(call.id);
+  }
+  result.decision_id = pending.decision_id;
+  state->pending.push_back(std::move(pending));
+  return result;
+}
+
 DecisionResult Session::Complete(ContextUpdate update) {
   if (!provider_) {
     return Refused(DecisionStatus::Closed, {}, "session has no provider");
   }
+  const Attempt attempt = BeginAttempt(std::move(update));
+  if (!attempt.started) {
+    return attempt.refusal;
+  }
+  // The provider call happens outside the lock.
+  return FinishAttempt(state_, attempt,
+                       CallProvider(provider_, attempt.request));
+}
 
-  ModelRequest request;
-  std::string revision;
-  {
-    std::lock_guard<std::mutex> lock(state_->mutex);
+std::future<DecisionResult> Session::CompleteAsync(ContextUpdate update) {
+  // A shared promise: the queued task must be copy-constructible, and
+  // std::promise is not.
+  auto promise = std::make_shared<std::promise<DecisionResult>>();
+  std::future<DecisionResult> future = promise->get_future();
 
-    if (state_->closed) {
-      return Refused(DecisionStatus::Closed, state_->context.context_revision(),
-                     "session is closed");
-    }
-    if (!state_->pending.empty()) {
-      return Refused(DecisionStatus::Busy, state_->context.context_revision(),
-                     "a decision is still awaiting tool results; call "
-                     "RecordToolResults or DiscardDecision first");
-    }
-
-    state_->context.SetContextUpdate(std::move(update));
-    revision = state_->context.context_revision();
-    request = state_->context.BuildRequest(state_->model);
+  if (!provider_) {
+    promise->set_value(
+        Refused(DecisionStatus::Closed, {}, "session has no provider"));
+    return future;
   }
 
-  // The provider call happens outside the lock: a slow completion must not
-  // block status queries, and the worker in CTX-3 relies on this shape.
-  CompletionResult completion = provider_->Complete(request);
-
-  DecisionResult result;
-  result.context_revision = revision;
-  result.completion = completion;
-  result.status = DecisionStatus::Completed;
-  if (!completion.IsSuccess()) {
-    return result;  // nothing to confirm, nothing to record
+  const Attempt attempt = BeginAttempt(std::move(update));
+  if (!attempt.started) {
+    promise->set_value(attempt.refusal);
+    return future;
   }
 
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->closed) {
-      return Refused(DecisionStatus::Closed, revision,
-                     "session was closed while the decision was in flight");
+    state_->tasks.push_back([state = state_, provider = provider_, attempt,
+                             promise]() mutable {
+      CompletionResult completion = CallProvider(provider, attempt.request);
+      // The worker finishes against the shared state, never against the
+      // Session object.
+      promise->set_value(FinishAttempt(state, attempt, std::move(completion)));
+    });
+    if (!state_->worker.joinable()) {
+      state_->worker = std::thread(&Session::RunWorker, state_);
     }
-    State::Pending pending;
-    pending.decision_id = state_->next_decision_id++;
-    pending.context_revision = revision;
-    pending.assistant = completion.ToAssistantMessage();
-    for (const ToolCall& call : completion.tool_calls) {
-      pending.tool_call_ids.push_back(call.id);
-    }
-    result.decision_id = pending.decision_id;
-    state_->pending.push_back(std::move(pending));
   }
+  state_->work_cv.notify_all();
+  return future;
+}
 
-  return result;
+void Session::RunWorker(std::shared_ptr<State> state) {
+  for (;;) {
+    std::function<void()> task;
+    {
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->work_cv.wait(
+          lock, [&state] { return state->stopping || !state->tasks.empty(); });
+      if (state->tasks.empty()) {
+        if (state->stopping) {
+          return;  // drained: accepted decisions have been answered
+        }
+        continue;
+      }
+      task = std::move(state->tasks.front());
+      state->tasks.pop_front();
+    }
+    task();
+  }
 }
 
 RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
@@ -196,7 +329,6 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
     tool_messages.push_back(Message::ToolResult(*match));
   }
   if (results.size() != pending->tool_call_ids.size()) {
-    // Extra results, or results for a call that was never made.
     return RecordOutcome::IncompleteResults;
   }
 
@@ -212,24 +344,47 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
                        return candidate.decision_id == decision_id;
                      }),
       state_->pending.end());
+  state_->idle_cv.notify_all();
   return RecordOutcome::Recorded;
 }
 
 bool Session::DiscardDecision(std::uint64_t decision_id) {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  const auto before = state_->pending.size();
+  const std::size_t before = state_->pending.size();
   state_->pending.erase(
       std::remove_if(state_->pending.begin(), state_->pending.end(),
                      [decision_id](const State::Pending& candidate) {
                        return candidate.decision_id == decision_id;
                      }),
       state_->pending.end());
-  return state_->pending.size() != before;
+  const bool removed = state_->pending.size() != before;
+  if (removed) {
+    state_->idle_cv.notify_all();
+  }
+  return removed;
+}
+
+std::size_t Session::in_flight_decision_count() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->in_flight_revision.has_value() ? 1u : 0u;
 }
 
 std::size_t Session::pending_decision_count() const {
   std::lock_guard<std::mutex> lock(state_->mutex);
   return state_->pending.size();
+}
+
+bool Session::busy() const {
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->in_flight_revision.has_value() || !state_->pending.empty();
+}
+
+bool Session::WaitForIdle(std::chrono::milliseconds timeout) const {
+  const std::shared_ptr<State> state = state_;
+  std::unique_lock<std::mutex> lock(state->mutex);
+  return state->idle_cv.wait_for(lock, timeout, [&state] {
+    return !state->in_flight_revision.has_value();
+  });
 }
 
 std::vector<std::uint64_t> Session::pending_decision_ids() const {
