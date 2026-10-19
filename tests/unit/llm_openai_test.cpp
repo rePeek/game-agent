@@ -67,6 +67,16 @@ ToolDefinition PressingTool(bool strict = true) {
   return tool;
 }
 
+ToolDefinition DefensiveLineTool(bool strict = true) {
+  ToolDefinition tool;
+  tool.name = "set_defensive_line";
+  tool.description = "Move the defensive line";
+  tool.parameters_schema_json =
+      R"({"type":"object","properties":{"height":{"type":"string","enum":["high","medium","low"]}},"required":["height"],"additionalProperties":false})";
+  tool.strict = strict;
+  return tool;
+}
+
 std::vector<ToolCall> TwoToolCalls() {
   return {
       ToolCall{"call_001", "set_pressing_intensity", kRawFirstArguments},
@@ -79,7 +89,7 @@ ModelRequest MakeRequest() {
   request.model = models::kGpt56;
   request.messages = {Message::System("You are a coach."),
                       Message::User("Opponent is pressing high.")};
-  request.tools = {PressingTool()};
+  request.tools = {PressingTool(), DefensiveLineTool()};
   request.max_tokens = 200;
   return request;
 }
@@ -163,10 +173,11 @@ TEST(LlmOpenAIBuilderTest, BuildsToolsAndRequiredToolChoice) {
   EXPECT_EQ(built.body["messages"][0]["content"], "You are a coach.");
   EXPECT_EQ(built.body["messages"][1]["role"], "user");
 
-  ASSERT_EQ(built.body["tools"].size(), 1u);
+  ASSERT_EQ(built.body["tools"].size(), 2u);
   const auto& tool = built.body["tools"][0];
   EXPECT_EQ(tool["type"], "function");
   EXPECT_EQ(tool["function"]["name"], "set_pressing_intensity");
+  EXPECT_EQ(built.body["tools"][1]["function"]["name"], "set_defensive_line");
   EXPECT_EQ(tool["function"]["description"],
             "Raise or lower the pressing intensity");
   EXPECT_TRUE(tool["function"]["strict"].get<bool>());
@@ -691,6 +702,96 @@ TEST(LlmOpenAITransportTest, DefaultTransportReportsConnectionFailures) {
               result.error->kind == ErrorKind::Timeout)
       << "unexpected kind: " << ToString(result.error->kind);
   EXPECT_TRUE(result.error->retryable);
+}
+
+// ---------------------------------------------------------------------------
+// Validation integration (PROTO-4)
+// ---------------------------------------------------------------------------
+TEST(LlmOpenAIProviderTest, UnknownToolIsNotSuccess) {
+  nlohmann::json message = TwoCallsMessage();
+  message["tool_calls"][1]["function"]["name"] = "delete_everything";
+
+  Fixture fixture;
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(message)));
+
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), fixture.Options());
+
+  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_FALSE(result.IsSuccess());
+  EXPECT_NE(result.ErrorMessage().find("delete_everything"), std::string::npos);
+}
+
+TEST(LlmOpenAIProviderTest, SchemaViolationIsNotSuccess) {
+  nlohmann::json message = TwoCallsMessage();
+  // level must be an integer, and height must be one of the listed values.
+  message["tool_calls"][0]["function"]["arguments"] = R"({"level":"high"})";
+
+  Fixture fixture;
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(message)));
+
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), fixture.Options());
+
+  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_TRUE(result.HasToolCalls())
+      << "an unvalidated batch is still reported for diagnostics";
+  EXPECT_NE(result.ErrorMessage().find("level"), std::string::npos);
+}
+
+TEST(LlmOpenAIProviderTest, InjectedValidatorDecides) {
+  // An application policy: one change per decision, whatever the schema says.
+  class SingleCallPolicy : public ToolCallValidator {
+   public:
+    ValidationReport Validate(
+        const ModelRequest&,
+        const std::vector<ToolCall>& tool_calls) const override {
+      ValidationReport report;
+      if (tool_calls.size() != 1) {
+        ValidationIssue issue;
+        issue.message = "exactly one tool call per decision";
+        report.issues.push_back(std::move(issue));
+      }
+      report.ok = report.issues.empty();
+      return report;
+    }
+  };
+
+  Fixture fixture;
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+
+  ProviderOptions options = fixture.Options();
+  options.validator = std::make_shared<const SingleCallPolicy>();
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), std::move(options));
+
+  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_NE(result.ErrorMessage().find("exactly one tool call"),
+            std::string::npos);
+}
+
+TEST(LlmOpenAIProviderTest, DowngradeStillValidates) {
+  // Accepting SDK-side validation instead of provider-side enforcement does not
+  // mean skipping validation.
+  nlohmann::json message = TwoCallsMessage();
+  message["tool_calls"][0]["function"]["name"] = "unknown_tool";
+
+  Fixture fixture;
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(message)));
+
+  ProviderOptions options = fixture.Options();
+  options.capabilities.strict_tool_schema = false;  // tools request strict
+  options.allow_validation_downgrade = true;
+
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), std::move(options));
+
+  EXPECT_EQ(result.status, CompletionStatus::InvalidToolCalls);
+  EXPECT_FALSE(result.warnings.empty());
 }
 
 }  // namespace

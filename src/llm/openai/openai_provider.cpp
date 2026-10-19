@@ -107,44 +107,6 @@ std::string CheckCapabilities(const ModelRequest& request,
   return problems;
 }
 
-/// Everything that must hold before a batch may be reported as Success.
-///
-/// This is the structural half of validation: the batch must be answerable
-/// (ids), addressable (names), and carry arguments the caller can parse. Tool
-/// existence, argument schemas and count limits are added by the validator.
-std::string CheckBatchShape(const ModelRequest& request,
-                            const std::vector<ToolCall>& calls) {
-  if (request.max_tool_calls.has_value() &&
-      calls.size() > request.max_tool_calls.value()) {
-    return "completion returned " + std::to_string(calls.size()) +
-           " tool calls, more than the request allows (" +
-           std::to_string(request.max_tool_calls.value()) + ")";
-  }
-
-  for (std::size_t i = 0; i < calls.size(); ++i) {
-    const ToolCall& call = calls[i];
-    const std::string where = "tool call #" + std::to_string(i);
-    if (call.id.empty()) {
-      return where + " has no id";
-    }
-    if (call.name.empty()) {
-      return where + " has no name";
-    }
-    const nlohmann::json arguments =
-        nlohmann::json::parse(call.arguments_json, nullptr, false);
-    if (arguments.is_discarded()) {
-      return where + " ('" + call.name +
-             "') has arguments that are not valid JSON";
-    }
-    if (!arguments.is_object()) {
-      return where + " ('" + call.name +
-             "') has arguments that are not a JSON object";
-    }
-  }
-
-  return {};
-}
-
 std::string BuildUrl(const std::string& base_url) {
   std::string base = base_url;
   while (!base.empty() && base.back() == '/') {
@@ -168,6 +130,9 @@ OpenAIProvider::OpenAIProvider(ProviderOptions options)
     : options_(std::move(options)) {
   if (!options_.transport) {
     options_.transport = CreateHttpsTransport();
+  }
+  if (!options_.validator) {
+    options_.validator = DefaultValidator();
   }
 }
 
@@ -309,11 +274,14 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     return result;
   }
 
-  const std::string shape_problem = CheckBatchShape(request, result.tool_calls);
-  if (!shape_problem.empty()) {
+  // The batch must pass every check the SDK promises: known tools, ids,
+  // parseable arguments and a matching parameter schema.
+  const ValidationReport report =
+      options_.validator->Validate(request, result.tool_calls);
+  if (!report.ok) {
     result.status = CompletionStatus::InvalidToolCalls;
     result.error =
-        MakeError(ErrorKind::InvalidRequest, shape_problem, response.status);
+        MakeError(ErrorKind::InvalidRequest, report.Summary(), response.status);
     return result;
   }
 

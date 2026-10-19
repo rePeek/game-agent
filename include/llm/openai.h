@@ -3,6 +3,7 @@
 #include "provider.h"
 #include "transport.h"
 #include "types.h"
+#include "validation.h"
 
 #include <memory>
 #include <optional>
@@ -72,6 +73,11 @@ struct ProviderOptions {
 
   /// Defaults to the cpp-httplib transport; tests inject a fake.
   std::shared_ptr<ITransport> transport;
+
+  /// Defaults to the JSON-Schema validator. Injecting one lets an application
+  /// add its own policy (for example a per-game allowed tool list) without
+  /// touching the provider.
+  std::shared_ptr<const ToolCallValidator> validator;
 };
 
 /// OpenAI-compatible Chat Completions provider.

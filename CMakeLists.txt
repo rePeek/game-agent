@@ -124,6 +124,17 @@ target_sources(llm-openai
         src/llm/openai/openai_response_parser.cpp
 )
 
+# Tool-call validation: standard-library-only interface, JSON in the
+# implementation only.
+add_library(llm-validation)
+add_library(llm::validation ALIAS llm-validation)
+configure_ai_component(llm-validation)
+
+target_sources(llm-validation
+    PRIVATE
+        src/llm/validation.cpp
+)
+
 # Link dependencies
 
 target_link_libraries(llm-http
@@ -140,9 +151,19 @@ target_link_libraries(llm-http
 
 # JSON stays an implementation detail of the provider: its public header is
 # standard-library-only.
+target_link_libraries(llm-validation
+    PUBLIC
+        llm::core
+    PRIVATE
+        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+)
+
+# JSON stays an implementation detail of the provider: its public header is
+# standard-library-only.
 target_link_libraries(llm-openai
     PUBLIC
         llm::core
+        llm::validation
     PRIVATE
         llm::http
         $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
@@ -218,7 +239,7 @@ else()
 endif()
 
 # Apply common options to all component targets
-foreach(target ${COMPONENT_TARGETS} llm-core llm-http llm-openai)
+foreach(target ${COMPONENT_TARGETS} llm-core llm-http llm-openai llm-validation)
     target_compile_options(${target} PRIVATE 
         ${COMMON_WARNINGS}
         $<$<CONFIG:Debug>:${DEBUG_FLAGS}>

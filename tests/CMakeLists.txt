@@ -3,6 +3,7 @@ add_executable(ai_tests
     # Unit tests
     unit/llm_core_test.cpp
     unit/llm_openai_test.cpp
+    unit/llm_validation_test.cpp
     unit/openai_client_test.cpp
     unit/types_test.cpp
 
@@ -20,6 +21,7 @@ target_link_libraries(ai_tests
         ai-sdk-cpp
         llm::core  # the STL-only protocol core
         llm::openai  # provider + transport
+        llm::validation  # tool-call validator
         nlohmann_json::nlohmann_json  # assertions on built request JSON
         httplib::httplib  # Need direct access to httplib for internal headers
         GTest::gtest
