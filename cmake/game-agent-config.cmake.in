@@ -1,0 +1,61 @@
+@PACKAGE_INIT@
+
+# game-agent package configuration.
+#
+# Installed targets (namespace llm::): core, tools, context, openai, sdk.
+# cpp-httplib and nlohmann/json are implementation details of the provider, so a
+# consumer only needs OpenSSL and Threads — and only when it links llm::openai:
+# llm::core, llm::tools and llm::context build and link without TLS.
+
+include(CMakeFindDependencyMacro)
+
+set(GAME_AGENT_VERSION "@PROJECT_VERSION@")
+
+set(GAME_AGENT_AVAILABLE_COMPONENTS core tools context openai sdk)
+
+set(GAME_AGENT_REQUESTED_COMPONENTS ${game-agent_FIND_COMPONENTS})
+if(NOT GAME_AGENT_REQUESTED_COMPONENTS)
+    set(GAME_AGENT_REQUESTED_COMPONENTS ${GAME_AGENT_AVAILABLE_COMPONENTS})
+endif()
+
+# Only the provider pulls in TLS and threads.
+if("openai" IN_LIST GAME_AGENT_REQUESTED_COMPONENTS OR "sdk" IN_LIST GAME_AGENT_REQUESTED_COMPONENTS)
+    find_dependency(OpenSSL REQUIRED)
+    find_dependency(Threads REQUIRED)
+endif()
+
+foreach(component ${GAME_AGENT_REQUESTED_COMPONENTS})
+    if(NOT component IN_LIST GAME_AGENT_AVAILABLE_COMPONENTS)
+        set(game-agent_FOUND FALSE)
+        set(game-agent_NOT_FOUND_MESSAGE "Unsupported component: ${component}")
+        return()
+    endif()
+endforeach()
+
+include("${CMAKE_CURRENT_LIST_DIR}/game-agent-targets.cmake")
+
+foreach(component ${GAME_AGENT_REQUESTED_COMPONENTS})
+    set(component_target "llm::${component}")
+    if(NOT TARGET ${component_target})
+        set(game-agent_FOUND FALSE)
+        set(game-agent_NOT_FOUND_MESSAGE "Component target ${component_target} not found")
+        return()
+    endif()
+    set(game-agent_${component}_FOUND TRUE)
+endforeach()
+
+check_required_components(game-agent)
+
+set(GAME_AGENT_FOUND TRUE)
+set(GAME_AGENT_LIBRARIES)
+set(GAME_AGENT_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+
+foreach(component ${GAME_AGENT_REQUESTED_COMPONENTS})
+    list(APPEND GAME_AGENT_LIBRARIES llm::${component})
+endforeach()
+
+if(NOT TARGET llm::core)
+    message(FATAL_ERROR "llm::core target not found. Make sure game-agent was installed properly.")
+endif()
+
+message(STATUS "Found game-agent: ${CMAKE_CURRENT_LIST_DIR} (found version \"${GAME_AGENT_VERSION}\")")

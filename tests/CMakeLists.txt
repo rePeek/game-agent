@@ -19,7 +19,7 @@ target_link_libraries(ai_tests
     PRIVATE
         llm::core
         llm::openai
-        llm::validation
+        llm::tools
         llm::context
         nlohmann_json::nlohmann_json
         httplib::httplib

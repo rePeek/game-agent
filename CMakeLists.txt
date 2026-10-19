@@ -1,7 +1,6 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)
 
-# Project definition
-project(ai-sdk-cpp
+project(game-agent
     VERSION 0.1.0
     DESCRIPTION "Structured tool-calling C++ SDK for OpenAI-compatible models"
     LANGUAGES CXX
@@ -15,124 +14,69 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_EXAMPLES "Build example applications" ON)
-option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
+option(BUILD_SHARED_LIBS "Build shared libraries instead of static ones" OFF)
 
 # Third-party dependencies: a vendored cpp-httplib header, nlohmann/json
-# (reused, found or fetched) and GoogleTest when tests are enabled.
+# (reused, found or fetched) and GoogleTest when tests are enabled. OpenSSL is
+# looked up by the module that needs it (src/providers/openai).
 add_subdirectory(third_party)
 
-find_package(OpenSSL REQUIRED)
-
-# Public headers live in include/, implementation details in src/.
+# ---------------------------------------------------------------------------
+# Module helpers
+#
+# Public headers live in include/, implementation details in src/. A module
+# target is created, configured and added to the install list by its own
+# src/<module>/CMakeLists.txt.
+# ---------------------------------------------------------------------------
 function(configure_llm_component target_name)
     target_include_directories(${target_name}
         PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
         PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/src
     )
 endfunction()
 
+function(configure_llm_warnings target_name)
+    if(MSVC)
+        target_compile_options(${target_name} PRIVATE /W4)
+        target_compile_definitions(${target_name} PRIVATE
+            WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601)
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -Wall -Wextra -Wpedantic
+            $<$<CONFIG:Debug>:-g -O0>
+            $<$<CONFIG:Release>:-O3>
+        )
+        if(APPLE)
+            target_compile_options(${target_name} PRIVATE -stdlib=libc++)
+        endif()
+    endif()
+
+    target_compile_definitions(${target_name} PRIVATE
+        $<$<CONFIG:Debug>:AI_SDK_DEBUG=1>
+        $<$<CONFIG:Release>:AI_SDK_RELEASE=1;NDEBUG>
+    )
+endfunction()
+
+# Targets that are installed and exported, filled in by the modules.
+define_property(GLOBAL PROPERTY LLM_INSTALL_TARGETS
+    BRIEF_DOCS "Targets installed by game-agent"
+    FULL_DOCS "Appended by each module's CMakeLists.txt, consumed by cmake/Install.cmake")
+
 # ---------------------------------------------------------------------------
-# llm::core — request, message, tool-call and completion vocabulary.
+# Modules
+# ---------------------------------------------------------------------------
+add_subdirectory(src/core)
+add_subdirectory(src/tools)
+add_subdirectory(src/context)
+add_subdirectory(src/providers)
+
+# ---------------------------------------------------------------------------
+# llm::sdk — convenience target for everything the SDK ships.
 #
-# Deliberately standard-library-only: the core has no JSON, HTTP or TLS
-# dependency, so it can be embedded anywhere and providers translate to it.
-# ---------------------------------------------------------------------------
-add_library(llm-core)
-add_library(llm::core ALIAS llm-core)
-set_target_properties(llm-core PROPERTIES EXPORT_NAME core)
-configure_llm_component(llm-core)
-
-target_sources(llm-core
-    PRIVATE
-        src/core/core.cpp
-)
-
-# ---------------------------------------------------------------------------
-# llm::validation — tool-call validation.
-#
-# The public header is standard-library-only (JSON text in, report out); the
-# JSON parser is an implementation detail.
-# ---------------------------------------------------------------------------
-add_library(llm-validation)
-add_library(llm::validation ALIAS llm-validation)
-set_target_properties(llm-validation PROPERTIES EXPORT_NAME validation)
-configure_llm_component(llm-validation)
-
-target_sources(llm-validation
-    PRIVATE
-        src/tools/validation.cpp
-)
-
-target_link_libraries(llm-validation
-    PUBLIC
-        llm::core
-    PRIVATE
-        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
-)
-
-# ---------------------------------------------------------------------------
-# llm::context — message history for one decision stream.
-#
-# Depends on llm::core only: a Session wraps a provider through the
-# IModelProvider interface, so it never links a concrete provider.
-# ---------------------------------------------------------------------------
-add_library(llm-context)
-add_library(llm::context ALIAS llm-context)
-set_target_properties(llm-context PROPERTIES EXPORT_NAME context)
-configure_llm_component(llm-context)
-
-target_sources(llm-context
-    PRIVATE
-        src/context/context.cpp
-        src/context/session.cpp
-)
-
-target_link_libraries(llm-context
-    PUBLIC
-        llm::core
-)
-
-# ---------------------------------------------------------------------------
-# llm::openai — OpenAI-compatible Chat Completions provider.
-#
-# It owns its HTTP transport: cpp-httplib and OpenSSL are implementation
-# details of this provider, not a module of their own.
-# ---------------------------------------------------------------------------
-add_library(llm-openai)
-add_library(llm::openai ALIAS llm-openai)
-set_target_properties(llm-openai PROPERTIES EXPORT_NAME openai)
-configure_llm_component(llm-openai)
-
-target_sources(llm-openai
-    PRIVATE
-        src/providers/openai/openai_provider.cpp
-        src/providers/openai/request_builder.cpp
-        src/providers/openai/response_parser.cpp
-        src/providers/openai/http_transport_httplib.cpp
-)
-
-# httplib and nlohmann/json are build-time only: a consumer of the installed
-# provider needs OpenSSL and Threads, which is what the INSTALL_INTERFACE
-# entries below export.
-target_link_libraries(llm-openai
-    PUBLIC
-        llm::core
-        llm::validation
-    PRIVATE
-        $<BUILD_INTERFACE:httplib::httplib>
-        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
-        $<BUILD_INTERFACE:OpenSSL::SSL>
-        $<BUILD_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:OpenSSL::SSL>
-        $<INSTALL_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:Threads::Threads>
-)
-
-# ---------------------------------------------------------------------------
-# llm::sdk — everything the SDK ships.
+# An INTERFACE library: it produces no extra archive, it only aggregates.
 # ---------------------------------------------------------------------------
 add_library(llm-sdk INTERFACE)
 add_library(llm::sdk ALIAS llm-sdk)
@@ -140,57 +84,19 @@ set_target_properties(llm-sdk PROPERTIES EXPORT_NAME sdk)
 
 target_include_directories(llm-sdk
     INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
 target_link_libraries(llm-sdk
     INTERFACE
         llm::core
-        llm::validation
+        llm::tools
         llm::context
         llm::openai
 )
 
-# Concrete (non-INTERFACE) targets: these take compile options and definitions.
-set(LLM_CONCRETE_TARGETS
-    llm-core
-    llm-validation
-    llm-context
-    llm-openai
-)
-
-# Everything that is installed and exported.
-set(LLM_TARGETS ${LLM_CONCRETE_TARGETS} llm-sdk)
-
-# Common compile options
-if(MSVC)
-    set(COMMON_WARNINGS /W4)
-    set(COMMON_PLATFORM_DEFS WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601)
-    set(DEBUG_FLAGS)
-    set(RELEASE_FLAGS)
-else()
-    set(COMMON_WARNINGS -Wall -Wextra -Wpedantic)
-    set(DEBUG_FLAGS -g -O0)
-    set(RELEASE_FLAGS -O3)
-    if(APPLE)
-        list(APPEND COMMON_WARNINGS -stdlib=libc++)
-    endif()
-endif()
-
-foreach(target ${LLM_CONCRETE_TARGETS})
-    target_compile_options(${target} PRIVATE
-        ${COMMON_WARNINGS}
-        $<$<CONFIG:Debug>:${DEBUG_FLAGS}>
-        $<$<CONFIG:Release>:${RELEASE_FLAGS}>
-    )
-
-    target_compile_definitions(${target} PRIVATE
-        $<$<CONFIG:Debug>:AI_SDK_DEBUG=1>
-        $<$<CONFIG:Release>:AI_SDK_RELEASE=1;NDEBUG>
-        $<$<BOOL:${MSVC}>:${COMMON_PLATFORM_DEFS}>
-    )
-endforeach()
+set_property(GLOBAL APPEND PROPERTY LLM_INSTALL_TARGETS llm-sdk)
 
 # Examples
 if(BUILD_EXAMPLES)
@@ -203,53 +109,12 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Installation rules
-include(GNUInstallDirs)
-
-install(TARGETS ${LLM_TARGETS}
-    EXPORT ai-sdk-cpp-targets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-install(DIRECTORY include/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.h"
-)
-
-# Export targets under the llm:: namespace (llm::core, llm::openai, ...).
-install(EXPORT ai-sdk-cpp-targets
-    FILE ai-sdk-cpp-targets.cmake
-    NAMESPACE llm::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp
-)
-
-include(CMakePackageConfigHelpers)
-
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ai-sdk-cpp-config.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cpp-config.cmake"
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp
-    PATH_VARS CMAKE_INSTALL_INCLUDEDIR
-)
-
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cpp-config-version.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-
-install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cpp-config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cpp-config-version.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp
-)
+# Installation, export and package configuration
+include(cmake/Install.cmake)
 
 # Print configuration summary
 message(STATUS "")
-message(STATUS "ai-sdk-cpp ${PROJECT_VERSION} Configuration Summary")
+message(STATUS "game-agent ${PROJECT_VERSION} Configuration Summary")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build examples: ${BUILD_EXAMPLES}")
