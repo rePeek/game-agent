@@ -6,7 +6,6 @@
 #include "tool.h"
 #include "usage.h"
 
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -29,13 +28,7 @@ struct GenerateOptions {
   // Tool calling support
   ToolSet tools;
   ToolChoice tool_choice = ToolChoice::auto_choice();
-  int max_steps = 1;
   std::vector<std::string> active_tools;
-
-  // Callbacks for tool calling
-  std::optional<std::function<void(const GenerateStep&)>> on_step_finish;
-  std::optional<std::function<void(const ToolCall&)>> on_tool_call_start;
-  std::optional<std::function<void(const ToolResult&)>> on_tool_call_finish;
 
   GenerateOptions(std::string model_name, std::string user_prompt)
       : model(std::move(model_name)), prompt(std::move(user_prompt)) {}
@@ -68,8 +61,6 @@ struct GenerateOptions {
   bool has_messages() const { return !messages.empty(); }
 
   bool has_tools() const { return !tools.empty(); }
-
-  bool is_multi_step() const { return max_steps > 1; }
 
   std::vector<std::string> get_active_tool_names() const {
     if (active_tools.empty()) {
@@ -107,8 +98,6 @@ struct GenerateResult {
 
   // Tool calling results
   std::vector<ToolCall> tool_calls;
-  std::vector<ToolResult> tool_results;
-  std::vector<GenerateStep> steps;
 
   GenerateResult() = default;
 
@@ -148,28 +137,6 @@ struct GenerateResult {
   }
 
   bool has_tool_calls() const { return !tool_calls.empty(); }
-
-  bool has_tool_results() const { return !tool_results.empty(); }
-
-  bool is_multi_step() const { return !steps.empty(); }
-
-  std::vector<ToolCall> get_all_tool_calls() const {
-    std::vector<ToolCall> all_calls = tool_calls;
-    for (const auto& step : steps) {
-      all_calls.insert(all_calls.end(), step.tool_calls.begin(),
-                       step.tool_calls.end());
-    }
-    return all_calls;
-  }
-
-  std::vector<ToolResult> get_all_tool_results() const {
-    std::vector<ToolResult> all_results = tool_results;
-    for (const auto& step : steps) {
-      all_results.insert(all_results.end(), step.tool_results.begin(),
-                         step.tool_results.end());
-    }
-    return all_results;
-  }
 };
 
 }  // namespace ai

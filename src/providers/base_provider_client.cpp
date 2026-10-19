@@ -1,7 +1,6 @@
 #include "base_provider_client.h"
 
 #include "ai/logger.h"
-#include "ai/tools.h"
 
 namespace ai {
 namespace providers {
@@ -28,28 +27,14 @@ BaseProviderClient::BaseProviderClient(
       config.base_url, config.completions_endpoint_path);
 }
 
+/// One completion request in, one parsed response out. The SDK never runs the
+/// tools the model asked for: the caller decides what to execute.
 GenerateResult BaseProviderClient::generate_text(
     const GenerateOptions& options) {
   ai::logger::log_debug(
-      "Starting text generation - model: {}, prompt length: {}, tools: {}, "
-      "max_steps: {}",
-      options.model, options.prompt.length(), options.tools.size(),
-      options.max_steps);
-
-  // Check if multi-step tool calling is enabled
-  if (options.has_tools() && options.is_multi_step()) {
-    ai::logger::log_debug("Using multi-step tool calling with {} tools",
-                          options.tools.size());
-
-    // Use MultiStepCoordinator for complex workflows
-    return MultiStepCoordinator::execute_multi_step(
-        options, [this](const GenerateOptions& step_options) {
-          return this->generate_text_single_step(step_options);
-        });
-  } else {
-    // Single step generation
-    return generate_text_single_step(options);
-  }
+      "Starting text generation - model: {}, prompt length: {}, tools: {}",
+      options.model, options.prompt.length(), options.tools.size());
+  return generate_text_single_step(options);
 }
 
 GenerateResult BaseProviderClient::generate_text_single_step(
@@ -96,41 +81,14 @@ GenerateResult BaseProviderClient::generate_text_single_step(
     auto parsed_result =
         response_parser_->parse_success_completion_response(json_response);
 
+    // The parsed tool calls are handed back untouched: no tool runs here, and
+    // nothing is appended to the conversation.
     if (parsed_result.has_tool_calls()) {
-      ai::logger::log_debug("Model made {} tool calls",
+      ai::logger::log_debug("Model asked for {} tool calls",
                             parsed_result.tool_calls.size());
-    }
-
-    // Execute tools if the model made tool calls
-    if (parsed_result.has_tool_calls() && options.has_tools()) {
-      ai::logger::log_debug("Model made {} tool calls, executing them",
-                            parsed_result.tool_calls.size());
-
-      auto tool_results = ToolExecutor::execute_tools_with_options(
-          parsed_result.tool_calls, options, false);
-
-      parsed_result.tool_results = tool_results;
-      ai::logger::log_debug("Executed {} tools", tool_results.size());
-
-      // Check if any tool execution failed
-      int failed_count = 0;
-      for (const auto& result : tool_results) {
-        if (!result.is_success()) {
-          failed_count++;
-          ai::logger::log_warn("Tool '{}' execution failed: {}",
-                               result.tool_name, result.error_message());
-        }
-      }
-
-      if (failed_count > 0) {
-        ai::logger::log_info(
-            "Some tools failed ({}/{}), but overall result is still successful",
-            failed_count, tool_results.size());
-      }
     }
 
     return parsed_result;
-
   } catch (const std::exception& e) {
     ai::logger::log_error("Exception during text generation: {}", e.what());
     return GenerateResult(std::string("Exception: ") + e.what());

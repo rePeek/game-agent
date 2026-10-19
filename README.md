@@ -82,91 +82,31 @@ The AI SDK CPP supports function calling, allowing models to interact with exter
 #include <ai/tools.h>
 #include <iostream>
 
-// Define a tool function
-ai::JsonValue get_weather(const ai::JsonValue& args, const ai::ToolExecutionContext& context) {
-    std::string location = args["location"].get<std::string>();
-    
-    // Your weather API logic here
-    return ai::JsonValue{
-        {"location", location},
-        {"temperature", 72},
-        {"condition", "Sunny"}
-    };
-}
-
 int main() {
     auto client = ai::openai::create_client();
-    
-    // Create tools
+
+    // Describe the tools; the SDK forwards this schema to the provider.
     ai::ToolSet tools = {
-        {"weather", ai::create_simple_tool(
-            "weather",
-            "Get current weather for a location", 
-            {{"location", "string"}},
-            get_weather
-        )}
+        {"weather", ai::create_tool_schema(
+            "Get current weather for a location",
+            ai::create_object_schema({{"location", "string"}}))}
     };
-    
+
     ai::GenerateOptions options(ai::openai::models::kGpt56,
-                                "What's the weather like in San Francisco?");
+                                "What's the weather in San Francisco?");
     options.tools = tools;
-    options.max_steps = 3;
+    options.tool_choice = ai::ToolChoice::required();
+
     auto result = client.generate_text(options);
-    
-    if (result) {
-        std::cout << result->text << std::endl;
-        
-        // Inspect tool calls and results
-        for (const auto& call : result->tool_calls) {
-            std::cout << "Tool: " << call.tool_name 
+
+    // The SDK reports the batch; executing it is the caller's job.
+    if (result && result.has_tool_calls()) {
+        for (const auto& call : result.tool_calls) {
+            std::cout << "Tool: " << call.tool_name
                       << ", Args: " << call.arguments.dump() << std::endl;
         }
     }
-    
-    return 0;
-}
-```
 
-#### Async Tool Calling
-
-For long-running operations, you can define asynchronous tools:
-
-```cpp
-#include <future>
-#include <thread>
-#include <chrono>
-
-// Async tool that returns a future
-std::future<ai::JsonValue> fetch_data_async(const ai::JsonValue& args, const ai::ToolExecutionContext& context) {
-    return std::async(std::launch::async, [args]() {
-        // Simulate async operation
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        
-        return ai::JsonValue{
-            {"data", "Fetched from API"},
-            {"timestamp", std::time(nullptr)}
-        };
-    });
-}
-
-int main() {
-    auto client = ai::openai::create_client();
-    
-    ai::ToolSet tools = {
-        {"fetch_data", ai::create_simple_async_tool(
-            "fetch_data",
-            "Fetch data from external API",
-            {{"endpoint", "string"}},
-            fetch_data_async
-        )}
-    };
-    
-    // Multiple async tools will execute in parallel
-    ai::GenerateOptions options(ai::openai::models::kGpt56,
-                                "Fetch data from the user and product APIs");
-    options.tools = tools;
-    auto result = client.generate_text(options);
-    
     return 0;
 }
 ```
@@ -254,8 +194,7 @@ See the [OpenRouter example](examples/openrouter_example.cpp) for a complete dem
 
 - ✅ **Text Generation**: Non-streaming completions against OpenAI and OpenAI-compatible APIs
 - ✅ **Multi-turn Conversations**: Support for conversation history
-- ✅ **Tool Calling**: Function calling and multi-step tool workflows
-- ✅ **Async Tools**: Asynchronous tool execution with parallel processing
+- ✅ **Tool Calling**: Function calling with schema-carrying tool definitions
 - ✅ **Configurable Retries**: Customizable retry behavior with exponential backoff
 - ✅ **Error Handling**: Comprehensive error handling with optional types
 
@@ -272,8 +211,6 @@ Check out our [examples directory](examples/) for more comprehensive usage examp
 - [Error Handling](examples/error_handling.cpp)
 - [Retry Configuration](examples/retry_config_example.cpp)
 - [Basic Tool Calling](examples/tool_calling_basic.cpp)
-- [Multi-Step Tool Workflows](examples/tool_calling_multistep.cpp)
-- [Async Tool Execution](examples/tool_calling_async.cpp)
 - [OpenRouter Integration](examples/openrouter_example.cpp) - Using OpenAI-compatible APIs
 
 ## Requirements

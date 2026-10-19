@@ -4,12 +4,10 @@ add_executable(ai_tests
     unit/llm_core_test.cpp
     unit/openai_client_test.cpp
     unit/types_test.cpp
-    unit/multi_step_coordinator_test.cpp
 
     # Integration tests
     integration/openai_integration_test.cpp
     integration/tool_calling_integration_test.cpp
-    integration/multi_step_duplicate_execution_test.cpp
 
     # Utility classes
     utils/test_fixtures.cpp

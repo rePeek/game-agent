@@ -43,9 +43,7 @@ add_ai_example(openrouter_example openrouter_example.cpp)
 
 # Tool calling examples
 add_ai_example(tool_calling_basic tool_calling_basic.cpp)
-add_ai_example(tool_calling_multistep tool_calling_multistep.cpp)
-add_ai_example(tool_calling_async tool_calling_async.cpp)
-add_ai_example(test_tool_integration test_tool_integration.cpp)
+
 # Component-specific examples
 add_subdirectory(components/openai)
 add_subdirectory(components/all)

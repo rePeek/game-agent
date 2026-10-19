@@ -5,12 +5,10 @@
 #include "ai/types/generate_options.h"
 #include "ai/types/tool.h"
 
-#include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -18,24 +16,15 @@
 namespace ai {
 namespace test {
 
-// Test fixtures for tool calling functionality
+// Tool definitions used by the integration tests. The SDK reports tool calls
+// and never executes them, so these fixtures describe tools only.
 class ToolTestFixtures {
  public:
-  // Create a simple weather tool
   static Tool createWeatherTool() {
-    return create_simple_tool(
-        "weather", "Get current weather information for a location",
-        {{"location", "string"}},
-        [](const JsonValue& args, const ToolExecutionContext& context) {
-          std::string location = args["location"].get<std::string>();
-          return JsonValue{{"location", location},
-                           {"temperature", 72},
-                           {"condition", "Sunny"},
-                           {"humidity", 45}};
-        });
+    return create_tool_schema("Get current weather information for a location",
+                              create_object_schema({{"location", "string"}}));
   }
 
-  // Create a calculator tool (using manual schema for complex validation)
   static Tool createCalculatorTool() {
     auto schema =
         JsonValue{{"type", "object"},
@@ -47,84 +36,22 @@ class ToolTestFixtures {
                     {"b", {{"type", "number"}}}}},
                   {"required", {"operation", "a", "b"}}};
 
-    return Tool(
-        "Perform basic arithmetic operations", schema,
-        [](const JsonValue& args, const ToolExecutionContext& context) {
-          std::string op = args["operation"].get<std::string>();
-          double a = args["a"].get<double>();
-          double b = args["b"].get<double>();
-
-          double result = 0.0;
-          if (op == "add") {
-            result = a + b;
-          } else if (op == "subtract") {
-            result = a - b;
-          } else if (op == "multiply") {
-            result = a * b;
-          } else if (op == "divide") {
-            if (b == 0.0) {
-              throw std::runtime_error("Division by zero");
-            }
-            result = a / b;
-          }
-
-          return JsonValue{
-              {"operation", op}, {"a", a}, {"b", b}, {"result", result}};
-        });
+    return Tool("Perform basic arithmetic operations", schema);
   }
 
-  // Create an async tool
-  static Tool createAsyncTimeTool() {
-    return create_simple_async_tool(
-        "time", "Get current time in specified timezone",
-        {{"timezone", "string"}},
-        [](const JsonValue& args, const ToolExecutionContext& context) {
-          return std::async(std::launch::async, [args]() {
-            // Simulate async operation
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            std::string timezone = args["timezone"].get<std::string>();
-            return JsonValue{{"timezone", timezone},
-                             {"time", "2024-01-01T12:00:00Z"}};
-          });
-        });
+  static Tool createTimeTool() {
+    return create_tool_schema("Get current time in specified timezone",
+                              create_object_schema({{"timezone", "string"}}));
   }
 
-  // Create a tool that throws an error
-  static Tool createErrorTool() {
-    return create_simple_tool(
-        "error_tool", "A tool that always throws an error",
-        {{"input", "string"}},
-        [](const JsonValue& args,
-           const ToolExecutionContext& context) -> JsonValue {
-          throw std::runtime_error("Intentional test error");
-        });
-  }
-
-  // Create common tool set
   static ToolSet createTestToolSet() {
     return {{"weather", createWeatherTool()},
             {"calculator", createCalculatorTool()},
-            {"time", createAsyncTimeTool()},
-            {"error_tool", createErrorTool()}};
-  }
-
-  // Create tool calls for testing
-  static ToolCall createWeatherCall() {
-    return ToolCall("call_123", "weather",
-                    JsonValue{{"location", "San Francisco"}});
-  }
-
-  static ToolCall createCalculatorCall() {
-    return ToolCall("call_456", "calculator",
-                    JsonValue{{"operation", "add"}, {"a", 10}, {"b", 5}});
-  }
-
-  static ToolCall createInvalidCall() {
-    return ToolCall("call_789", "nonexistent", JsonValue{{"param", "value"}});
+            {"time", createTimeTool()}};
   }
 };
 
-// Parameterized test class that works with both providers
+// Parameterized test class for the OpenAI-compatible provider
 class ToolCallingIntegrationTest
     : public ::testing::TestWithParam<std::string> {
  protected:
@@ -361,122 +288,14 @@ TEST_P(ToolCallingIntegrationTest, ComplexToolParameters) {
   }
 }
 
-// Test tool execution results
-TEST_P(ToolCallingIntegrationTest, ToolExecutionResults) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No API key set for " << GetParam();
-  }
-
-  GenerateOptions options(
-      model_, "What's 15 + 25? Please show me the exact calculation.");
-  options.tools = tools_;
-  options.tool_choice = ToolChoice::specific("calculator");
-  options.max_tokens = 300;
-
-  auto result = client_->generate_text(options);
-
-  // Result should be successful, even if text is empty when using tools
-  EXPECT_TRUE(result.is_success())
-      << "Expected successful result but got error: " << result.error_message();
-  EXPECT_FALSE(result.error.has_value())
-      << "Expected no error in successful result";
-
-  // Should have tool calls and results
-  EXPECT_TRUE(result.has_tool_calls());
-  EXPECT_TRUE(result.has_tool_results());
-
-  // Find calculator result
-  auto calc_result = std::find_if(
-      result.tool_results.begin(), result.tool_results.end(),
-      [](const ToolResult& res) { return res.tool_name == "calculator"; });
-
-  if (calc_result != result.tool_results.end()) {
-    EXPECT_TRUE(calc_result->is_success());
-    EXPECT_TRUE(calc_result->result.contains("result"));
-    EXPECT_EQ(calc_result->result["result"].get<double>(), 40.0);
-  }
-}
-
-// Test async tool execution
-TEST_P(ToolCallingIntegrationTest, AsyncToolExecution) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No API key set for " << GetParam();
-  }
-
-  GenerateOptions options(model_, "What time is it in UTC?");
-  options.tools = tools_;
-  options.max_tokens = 200;
-
-  auto result = client_->generate_text(options);
-
-  // Result should be successful, text might be empty if only tool calls are
-  // returned
-  EXPECT_TRUE(result.is_success())
-      << "Expected successful result but got error: " << result.error_message();
-  EXPECT_FALSE(result.error.has_value())
-      << "Expected no error in successful result";
-
-  // Should potentially use the time tool
-  if (result.has_tool_calls()) {
-    auto time_call = std::find_if(
-        result.tool_calls.begin(), result.tool_calls.end(),
-        [](const ToolCall& call) { return call.tool_name == "time"; });
-
-    if (time_call != result.tool_calls.end()) {
-      EXPECT_TRUE(time_call->arguments.contains("timezone"));
-    }
-  }
-}
-
-// Test error handling in tools
-TEST_P(ToolCallingIntegrationTest, ToolExecutionError) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No API key set for " << GetParam();
-  }
-
-  // Create a minimal tool set with just the error tool
-  ToolSet error_tools = {{"error_tool", ToolTestFixtures::createErrorTool()}};
-
-  GenerateOptions options(model_, "Use the error tool");
-  options.tools = error_tools;
-  options.tool_choice = ToolChoice::specific("error_tool");
-  options.max_tokens = 200;
-
-  auto result = client_->generate_text(options);
-
-  // The overall result should still be successful even if tool execution fails
-  // When forcing tool use, text might be empty
-  EXPECT_TRUE(result.is_success())
-      << "Expected successful result but got error: " << result.error_message();
-  EXPECT_FALSE(result.error.has_value())
-      << "Expected no error in successful result";
-
-  // Should have tool calls and results
-  EXPECT_TRUE(result.has_tool_calls());
-  EXPECT_TRUE(result.has_tool_results());
-
-  // The tool result should indicate an error
-  auto error_result = std::find_if(
-      result.tool_results.begin(), result.tool_results.end(),
-      [](const ToolResult& res) { return res.tool_name == "error_tool"; });
-
-  if (error_result != result.tool_results.end()) {
-    EXPECT_FALSE(error_result->is_success());
-    EXPECT_TRUE(error_result->error.has_value());
-    EXPECT_THAT(error_result->error_message(),
-                testing::HasSubstr("Intentional test error"));
-  }
-}
-
 // Test invalid tool schema validation
 TEST_P(ToolCallingIntegrationTest, InvalidToolArguments) {
   if (!use_real_api_) {
     GTEST_SKIP() << "No API key set for " << GetParam();
   }
 
-  // This test relies on the model providing correct arguments based on schema
-  // If the model provides invalid arguments, tool execution should handle it
-  // gracefully
+  // This test relies on the model providing arguments that match the schema.
+  // Whether those arguments would satisfy the caller is not the SDK's call.
   GenerateOptions options(model_,
                           "Calculate the result without providing numbers");
   options.tools = tools_;
@@ -494,22 +313,10 @@ TEST_P(ToolCallingIntegrationTest, InvalidToolArguments) {
 
   if (result.has_tool_calls()) {
     EXPECT_EQ(result.tool_calls[0].tool_name, "calculator");
-
-    // If tool results exist and show an error due to missing/invalid params,
-    // that's expected behavior
-    if (result.has_tool_results()) {
-      auto calc_result = std::find_if(
-          result.tool_results.begin(), result.tool_results.end(),
-          [](const ToolResult& res) { return res.tool_name == "calculator"; });
-      if (calc_result != result.tool_results.end()) {
-        // Tool might succeed or fail depending on what the model provides
-        // Both outcomes are acceptable for this test
-      }
-    }
   }
 }
 
-// Test concurrent tool calls
+// Test concurrent requests
 TEST_P(ToolCallingIntegrationTest, ConcurrentToolCalls) {
   if (!use_real_api_) {
     GTEST_SKIP() << "No API key set for " << GetParam();
@@ -561,10 +368,7 @@ TEST_P(ToolCallingIntegrationTest, ToolSchemaValidation) {
              {{"type", "string"},
               {"enum", {"option1", "option2", "option3"}}}}}},
           {"required", {"required_string", "required_number", "enum_value"}},
-          {"additionalProperties", false}},
-      [](const JsonValue& args, const ToolExecutionContext&) {
-        return JsonValue{{"status", "success"}, {"received_args", args}};
-      });
+          {"additionalProperties", false}});
 
   ToolSet strict_tools = {{"strict_tool", strict_tool}};
 
@@ -610,7 +414,7 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<ToolCallingIntegrationTest::ParamType>&
            info) { return info.param; });
 
-// Provider-specific tests for features that don't work on both
+// Provider-specific tests
 
 class OpenAISpecificToolTest : public ::testing::Test {
  protected:
