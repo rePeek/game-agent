@@ -42,6 +42,6 @@ add_subdirectory(context)
 add_subdirectory(agent)
 add_subdirectory(providers/openai)
 
-# Cross-component tests: Session + Context + the OpenAI provider, driven through
+# Cross-component tests: Agent + Context + the OpenAI provider, driven through
 # a scripted transport (no network, no API key).
 add_subdirectory(integration)

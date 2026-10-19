@@ -31,7 +31,7 @@ its side effects, and it needs the model's decisions as data, not as prose.
 | Force tool calling (`tool_choice`) and request strict schemas | Open the next decision window on its own |
 | Return every tool call in order, with ids and raw arguments | Stream tokens or SSE |
 | Validate the batch (known tools, count, JSON, schema) before Success | Summarize history with another model call |
-| Keep the transcript of a decision stream (`llm::Session`) | Let a rejected or stale batch into that transcript |
+| Keep the transcript of a decision stream (`llm::Agent`) | Let a rejected or stale batch into that transcript |
 | Report failures as statuses instead of silent fallbacks | Provide a general chat/text-generation API |
 
 ## Completion statuses
@@ -112,141 +112,75 @@ Runnable versions: [`examples/coach_decision.cpp`](examples/coach_decision.cpp)
 (scripted transport, no key, no network — it also prints the request body the
 SDK would send).
 
-## Sessions
+## Agents
 
-A game usually does not want to assemble messages per decision. `llm::Session`
-owns the transcript of one decision stream (one coach, one side) and hands out
-decisions:
+A game owns one `llm::Agent` per decision stream (one coach, one side) and drives
+it:
 
 ```cpp
-llm::SessionConfig config;
+llm::AgentConfig config;
+config.id = "home";                       // how this stream appears in logs
 config.model = llm::openai::models::kGpt56;
 config.system_prompt = "You are the head coach. Answer only with tool calls.";
-config.context.max_messages = 32;   // transcript budget
+config.context.max_messages = 32;         // transcript budget
 config.max_tokens = 300;
-config.max_tool_calls = 3;          // enforced by the validator
+config.max_tool_calls = 3;                // enforced by the validator
 
-auto session = llm::CreateSession(
-    llm::openai::CreateProviderFromEnvironment(), std::move(config));
-session->SetTools(coach_tools);     // std::vector<llm::ToolDefinition>
+llm::Agent agent(llm::openai::CreateProviderFromEnvironment(), std::move(config));
+agent.SetTools(coach_tools);              // std::vector<llm::ToolDefinition>
 
-// Decision window: submit and keep simulating.
-std::future<llm::DecisionResult> future = session->CompleteAsync({
-    .current_context = board.Describe(),      // replaces the previous snapshot
-    .recent_history = coach.RecentTrends(),   // replaces the previous window
-    .context_revision = board.Revision(),
-});
+// A decision window opens: the world changed...
+agent.UpdateContext({.current_context = board.Describe(),
+                     .recent_history = coach.RecentTrends(),
+                     .context_revision = board.Revision()});
+// ...and the model is asked, without blocking the tick.
+std::future<llm::DecisionResult> future = agent.DecideAsync();
 
 // Later in the game loop:
-if (session->WaitForIdle(std::chrono::milliseconds(0))) {
+if (agent.WaitForIdle(std::chrono::milliseconds(0))) {
   const llm::DecisionResult decision = future.get();
   if (decision.status == llm::DecisionStatus::Completed &&
       decision.completion.IsSuccess() &&
       decision.context_revision == board.Revision()) {   // staleness check
     auto results = coach_tools.ExecuteBatch(decision.completion.tool_calls);
-    session->RecordToolResults(decision.decision_id, results);
+    agent.RecordToolResults(decision.decision_id, results);
   } else {
-    session->DiscardDecision(decision.decision_id);
+    agent.DiscardDecision(decision.decision_id);
   }
 }
 ```
 
-What the Session guarantees:
+What the agent guarantees:
 
-- **state is not history**: the current context and the recent-history window
-  replace their predecessors, so old snapshots never pile up;
-- **one decision at a time**: while a decision is in flight or awaiting
-  results, a new one is refused as `Busy` (and its context update is not
-  applied), so a decision is never taken with an incomplete transcript;
+- **state is not history**: `UpdateContext` replaces the snapshot and the
+  recent-history window, so old states never pile up. It may be called at any
+  time, including while a decision is in flight — the update then applies to the
+  *next* decision, never to the request already sent;
+- **one decision at a time**, per agent: while a decision is in flight or
+  awaiting results, a new one is refused as `Busy`. Two agents may share one
+  provider and be in flight simultaneously; they share nothing else;
 - **atomic confirmation**: a decision enters the transcript only when the
-  application reports exactly one result per tool call — otherwise nothing is
-  recorded and the decision stays pending. `DiscardDecision` drops it instead
+  application reports exactly one result per tool call. Otherwise nothing is
+  recorded and the decision stays pending; `DiscardDecision` drops it instead
   (a stale revision, a rolled-back transaction);
-- **staleness is visible**: every decision carries the `context_revision` it
-  was taken from; deciding whether it is still relevant stays with the game;
-- **no blocking**: `CompleteAsync` snapshots the request on the calling thread
-  and runs the provider call on the session's own worker, so a 100 Hz loop
-  never waits on the network. `Close()` refuses further work and discards a
-  decision that returns afterwards; the destructor joins the worker.
+- **staleness is visible**: every decision carries the `context_revision` it was
+  taken from; whether that is still current is the game's call;
+- **no blocking**: `DecideAsync` snapshots the request on the calling thread and
+  runs the provider on the agent's own worker. `Close()` refuses further work and
+  discards a decision that returns afterwards; the destructor joins the worker.
 
-The transcript is trimmed deterministically by `ContextConfig::max_messages`
-and `max_decisions`: whole decisions are dropped oldest-first, never half of
-one, and `RenderedContext` reports what was kept. No summarization model call
-is involved.
-
-## Logging
-
-The SDK defines a logging interface and produces events; it ships no logger,
-no formatting and no logging dependency. An application injects one:
-
-```cpp
-class MyLogger : public llm::ILogger {
- public:
-  void Log(const llm::LogRecord& record) override;  // level, event, message,
-                                                    // session_id, request_id
-};
-
-auto logger = std::make_shared<MyLogger>();
-
-llm::SessionConfig config;
-config.model  = llm::openai::models::kGpt56;
-config.logger = logger;          // session events
-config.session_id = "home";      // which decision stream this is
-
-llm::openai::ProviderOptions provider_options;
-provider_options.api_key = "...";
-provider_options.logger  = logger;   // provider events, same sink
-```
-
-Events are stable names (`llm::log_event::*`): `session.created`,
-`session.decision_started`, `session.decision_completed`,
-`session.decision_recorded`, `session.decision_discarded`,
-`session.decision_rejected` (busy or closed — the answer to "why was this
-Busy?"), `session.decision_record_rejected`, `session.closed`,
-`provider.request_started`, `provider.retry`, `provider.request_completed`,
-`provider.request_failed`, `provider.requirement_downgraded` and
-`tools.validation_failed`.
-
-Every record carries `session_id` and the per-attempt `request_id`. Recording,
-discarding and rejecting a decision reuse the id of the attempt that produced
-it, so one decision is one correlation id from start to finish — which matters
-when a provider is shared by several agents:
-
-```
-INFO  [home:1] session.decision_started: rev=rev-62, tools=3, messages=2
-INFO  [home:1] provider.request_started: model=gpt-5.6, tools=3, …
-WARN  [home:1] provider.retry: attempt=1, http=429, kind=rate limit, …
-INFO  [home:1] provider.request_completed: status=success, http=200, attempts=2, …
-INFO  [home:1] session.decision_completed: status=success, tools=3, tokens=128, …
-INFO  [home:1] session.decision_recorded: decision_id=1, results=3, rev=rev-62
-```
-
-What the SDK guarantees, and what it deliberately leaves out:
-
-- **no logger means no logging**, and a logger that throws cannot change a
-  decision's outcome (dispatch swallows the exception);
-- the logger is never called while a session lock is held, so an
-  implementation may call back into the session;
-- only metadata is logged: classifications and counts (kind, status, HTTP code,
-  attempts, tokens, tool counts, schema summaries). Prompts, API keys, model
-  text and raw responses are never logged — they stay in `CompletionResult`,
-  where the caller can decide what to do with them;
-- events are per decision and per request, not per simulation tick;
-- logging is diagnostics only: `CompletionResult` and the session history stay
-  authoritative.
-
-Test-side implementations live in `tests/support/`: `CaptureLogger` for
-asserting on events in unit tests, and `ConsoleLogger` for reading a run by
-hand:
-
-```bash
-ctest -R console_logger_demo -V        # prints a whole decision round
-```
+`llm::Context` is the internal component the agent owns: it keeps the current
+snapshot, the recent-history window, the confirmed decisions and the projection
+budget. The system prompt, the tools, the model and the provider belong to the
+agent. The transcript is trimmed deterministically by `max_messages` and
+`max_decisions`: whole decisions are dropped oldest-first, never half of one,
+and `RenderedContext` reports what was kept. No summarization model call is
+involved.
 
 ## Feeding a previous decision back
 
-`llm::Session` does this for you; the section is here because the pieces it
-uses are public. `llm::Message` keeps the tool vocabulary, so a decision round —
+`llm::Agent` does this for you; the section is here because the pieces it uses
+are public. `llm::Message` keeps the tool vocabulary, so a decision round —
 the assistant's tool calls plus their results — can be sent back as context.
 The SDK builds neither the messages nor the loop:
 
@@ -296,7 +230,7 @@ options.validator = std::make_shared<const OneChangePerRound>();
 
 ## Providers and guarantees
 
-A provider is what a Session wraps; it is also usable directly (see the coach
+A provider is what an Agent wraps; it is also usable directly (see the coach
 decision example).
 
 A provider publishes what it can actually guarantee
@@ -367,7 +301,7 @@ Four modules, one target each:
 | --- | --- | --- |
 | `core` | `llm::core` | the standard library |
 | `tools` | `llm::tools` | `llm::core` (JSON is private) |
-| `context` | `llm::context` | `llm::core` (no provider, no TLS) |
+| `context` | `llm::context` | `llm::core` (the Agent and its Context; no provider, no TLS) |
 | `openai` | `llm::openai` | `llm::core`, `llm::tools` (+ OpenSSL for its transport) |
 | `sdk` | `llm::sdk` | all of the above (an INTERFACE target, no extra archive) |
 
@@ -397,9 +331,9 @@ A consumer of the installed package needs OpenSSL and Threads only.
 
 ## Examples
 
-- [Coach session](examples/coach_session.cpp) — the intended flow for a game:
-  a Session, asynchronous decisions, revision checks and history that moves
-  forward only when results are reported (runs offline without a key).
+- [Coach agent](examples/coach_agent.cpp) — the intended flow for a game: an
+  Agent, asynchronous decisions, revision checks and history that moves forward
+  only when results are reported (runs offline without a key).
 - [Coach decision](examples/coach_decision.cpp) — the provider on its own:
   context, tools, one completion, a validated batch, caller-side dispatch.
 - [Offline transport](examples/offline_transport.cpp) — the same flow with a

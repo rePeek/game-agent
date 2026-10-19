@@ -1,16 +1,17 @@
 /**
- * Coach Session Example - AI SDK C++
+ * Coach Agent Example - AI SDK C++
  *
- * The intended application flow: the game talks to one llm::Session per
- * decision stream (one coach, one side).
+ * The intended application flow: the game owns one llm::Agent per decision
+ * stream (one coach, one side) and drives it.
  *
  *   decision window opens
- *     -> session.CompleteAsync(context update)   // never blocks the tick
+ *     -> agent.UpdateContext(context)     // the world changed
+ *     -> agent.DecideAsync()              // never blocks the tick
  *   ... the game keeps simulating ...
- *     -> future.get() / WaitForIdle()            // decision is ready
+ *     -> future.get() / WaitForIdle()     // decision is ready
  *     -> the game checks the context revision
  *     -> the game executes the batch itself
- *     -> session.RecordToolResults(...)          // history moves forward
+ *     -> agent.RecordToolResults(...)     // history moves forward
  *
  * The SDK owns the transcript (system prompt, tools, current context, recent
  * history, confirmed decisions). The game owns the state, the side effects and
@@ -20,8 +21,8 @@
  * anywhere and still shows the whole flow.
  *
  * Usage:
- *   ./coach_session                  # offline, scripted
- *   export OPENAI_API_KEY=... && ./coach_session
+ *   ./coach_agent                    # offline, scripted
+ *   export OPENAI_API_KEY=... && ./coach_agent
  */
 
 #include <cstdlib>
@@ -176,14 +177,12 @@ std::vector<llm::ToolResult> ExecuteBatch(
 /// One decision window: submit, (in a game: keep simulating), collect, and
 /// move the history forward only if the answer is still about the current
 /// state.
-void RunWindow(const std::shared_ptr<llm::Session>& session,
-               int minute,
-               const std::string& revision) {
+void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
   std::cout << "decision window (minute " << minute << ", revision " << revision
             << ")\n";
 
-  std::future<llm::DecisionResult> future =
-      session->CompleteAsync(BuildContext(minute, revision));
+  agent.UpdateContext(BuildContext(minute, revision));
+  std::future<llm::DecisionResult> future = agent.DecideAsync();
 
   // A game would keep ticking here. The example simply waits for the answer.
   const llm::DecisionResult decision = future.get();
@@ -202,17 +201,17 @@ void RunWindow(const std::shared_ptr<llm::Session>& session,
 
   // The revision travelled with the decision, so a stale answer can be
   // recognised before anything is applied.
-  if (decision.context_revision != session->current_revision()) {
+  if (decision.context_revision != agent.current_revision()) {
     std::cout << "  stale decision (" << decision.context_revision
-              << " != " << session->current_revision() << "), discarded\n\n";
-    session->DiscardDecision(decision.decision_id);
+              << " != " << agent.current_revision() << "), discarded\n\n";
+    agent.DiscardDecision(decision.decision_id);
     return;
   }
 
   const std::vector<llm::ToolResult> results =
       ExecuteBatch(decision.completion.tool_calls);
 
-  switch (session->RecordToolResults(decision.decision_id, results)) {
+  switch (agent.RecordToolResults(decision.decision_id, results)) {
     case llm::RecordOutcome::Recorded:
       std::cout << "  decision " << decision.decision_id
                 << " recorded; the next request sees it as history\n\n";
@@ -224,7 +223,7 @@ void RunWindow(const std::shared_ptr<llm::Session>& session,
       std::cout << "  no such pending decision\n\n";
       break;
     case llm::RecordOutcome::Closed:
-      std::cout << "  session is closed\n\n";
+      std::cout << "  agent is closed\n\n";
       break;
   }
 }
@@ -232,13 +231,13 @@ void RunWindow(const std::shared_ptr<llm::Session>& session,
 }  // namespace
 
 int main() {
-  std::cout << "AI SDK C++ - Coach Session Example\n";
+  std::cout << "AI SDK C++ - Coach Agent Example\n";
   std::cout << "===================================\n\n";
 
   const bool offline = std::getenv("OPENAI_API_KEY") == nullptr;
 
   // The SDK ships no logger: this example injects its own into both the
-  // provider and the session, so every event carries the same session id.
+  // provider and the agent, so every event carries the same stream id.
   auto logger = std::make_shared<EventPrinter>();
   std::cout << "log events (session " << "home" << "):\n";
 
@@ -255,7 +254,8 @@ int main() {
     provider = llm::openai::CreateProviderFromEnvironment(logger);
   }
 
-  llm::SessionConfig config;
+  llm::AgentConfig config;
+  config.id = "home";
   config.model = llm::openai::models::kGpt56;
   config.system_prompt =
       "You are the head coach. Answer only with tool calls that change or keep "
@@ -264,26 +264,24 @@ int main() {
   config.context.max_decisions = 4;
   config.max_tokens = 300;
   config.max_tool_calls = 3;
-  config.session_id = "home";
   config.logger = logger;
 
-  const std::shared_ptr<llm::Session> session =
-      llm::CreateSession(provider, std::move(config));
-  session->SetTools({PressingTool(), LineTool(), KeepTool()});
+  llm::Agent agent(provider, std::move(config));
+  agent.SetTools({PressingTool(), LineTool(), KeepTool()});
 
-  RunWindow(session, 62, "rev-62");
-  RunWindow(session, 70, "rev-70");
+  RunWindow(agent, 62, "rev-62");
+  RunWindow(agent, 70, "rev-70");
 
-  const llm::Context context = session->ContextSnapshot();
+  const llm::Context context = agent.ContextSnapshot();
   const llm::RenderedContext rendered = context.Render();
   std::cout << "\nsession state\n";
   std::cout << "  confirmed decisions: " << context.decision_count() << "\n";
   std::cout << "  messages to send:    " << rendered.messages.size()
             << " (included " << rendered.decisions_included << ", dropped "
             << rendered.decisions_dropped << ")\n";
-  std::cout << "  pending decisions:   " << session->pending_decision_count()
+  std::cout << "  pending decisions:   " << agent.PendingDecisionCount()
             << "\n";
-  std::cout << "  current revision:    " << session->current_revision() << "\n";
+  std::cout << "  current revision:    " << agent.current_revision() << "\n";
 
   std::cout << "\nThe SDK kept the transcript; the game kept the state and the "
                "side effects.\n";

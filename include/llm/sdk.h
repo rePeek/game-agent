@@ -7,6 +7,9 @@
 /// even through this file — the transport interface is standard-library-only
 /// and the HTTP implementation stays inside the provider.
 
+// The agent: one decision stream, its context and its provider.
+#include "llm/agent.hpp"
+
 // Core: protocol vocabulary and the provider interface.
 #include "llm/core/logger.h"
 #include "llm/core/message.h"
@@ -18,9 +21,8 @@
 // Tools: schema and batch validation.
 #include "llm/tools/validation.h"
 
-// Context: per-session history and asynchronous decisions.
+// Context: the history the agent projects into a request.
 #include "llm/context/context.h"
-#include "llm/context/session.h"
 
 // Providers.
 #include "llm/providers/openai/openai.h"

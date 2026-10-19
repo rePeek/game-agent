@@ -20,8 +20,8 @@ function(add_llm_example name source_file)
     )
 endfunction()
 
-# The Session flow: context in, validated decision batch out, history managed.
-add_llm_example(coach_session coach_session.cpp)
+# The Agent flow: context in, validated decision batch out, history managed.
+add_llm_example(coach_agent coach_agent.cpp)
 
 # The provider flow on its own: one completion, caller-side dispatch.
 add_llm_example(coach_decision coach_decision.cpp)
@@ -30,6 +30,6 @@ add_llm_example(coach_decision coach_decision.cpp)
 add_llm_example(offline_transport offline_transport.cpp)
 
 message(STATUS "Examples will be built in: ${CMAKE_BINARY_DIR}/examples/")
-message(STATUS "  ./examples/coach_session      (scripted without OPENAI_API_KEY)")
+message(STATUS "  ./examples/coach_agent        (scripted without OPENAI_API_KEY)")
 message(STATUS "  ./examples/coach_decision     (needs OPENAI_API_KEY)")
 message(STATUS "  ./examples/offline_transport  (no key, no network)")

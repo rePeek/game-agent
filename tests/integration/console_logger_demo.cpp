@@ -7,7 +7,7 @@
 //   ctest -R console_logger_demo -V
 //   ./build/tests/integration/console_logger_demo
 //
-// The scripted transport keeps it offline: it shows the session lifecycle
+// The scripted transport keeps it offline: it shows the agent lifecycle
 // (started, completed, recorded, rejected, discarded, closed) and the provider
 // events, all correlated by [session_id:request_id].
 
@@ -84,7 +84,7 @@ int main() {
   std::cout << "game-agent - ConsoleLogger demo\n";
   std::cout << "================================\n\n";
 
-  // One logger, injected into both the provider and the session, so the whole
+  // One logger, injected into both the provider and the agent, so the whole
   // decision is visible as one stream.
   auto logger = std::make_shared<ConsoleLogger>();
 
@@ -92,10 +92,10 @@ int main() {
   provider_options.api_key = "scripted";
   provider_options.logger = logger;
 
-  llm::SessionConfig config;
+  llm::AgentConfig config;
+  config.id = "home";
   config.model = llm::openai::models::kGpt56;
   config.system_prompt = "You are the head coach. Answer only with tool calls.";
-  config.session_id = "home";
   config.logger = logger;
   config.max_tokens = 300;
   config.max_tool_calls = 3;
@@ -103,40 +103,41 @@ int main() {
   // A scripted transport keeps the demo offline; with a real key, drop it and
   // use CreateProviderFromEnvironment(logger) instead.
   provider_options.transport = std::make_shared<ScriptedTransport>();
-  auto session = llm::CreateSession(
-      llm::openai::CreateProvider(std::move(provider_options)),
-      std::move(config));
-  session->SetTools({PressingTool()});
+  llm::Agent agent(llm::openai::CreateProvider(std::move(provider_options)),
+                   std::move(config));
+  agent.SetTools({PressingTool()});
 
   std::cout << "-- decision 1: a normal round\n";
-  const llm::DecisionResult first = session->Complete(Update("rev-62"));
+  agent.UpdateContext(Update("rev-62"));
+  const llm::DecisionResult first = agent.DecideAsync().get();
   if (!first.completion.IsSuccess()) {
     std::cerr << "unexpected: " << first.completion.ErrorMessage() << "\n";
     return 1;
   }
 
   std::cout << "\n-- a second decision before recording the first: rejected\n";
-  session->Complete(Update("rev-63"));
+  agent.UpdateContext(Update("rev-63"));
+  agent.DecideAsync().get();
 
   std::cout << "\n-- recording the first decision's results\n";
   std::vector<llm::ToolResult> results;
   for (const llm::ToolCall& call : first.completion.tool_calls) {
     results.push_back(ResultFor(call.id));
   }
-  session->RecordToolResults(first.decision_id, results);
+  agent.RecordToolResults(first.decision_id, results);
 
   std::cout << "\n-- decision 2, then discarding it (stale revision)\n";
-  const llm::DecisionResult second = session->Complete(Update("rev-70"));
+  agent.UpdateContext(Update("rev-70"));
+  const llm::DecisionResult second = agent.DecideAsync().get();
   if (second.decision_id != 0) {
-    session->DiscardDecision(second.decision_id);
+    agent.DiscardDecision(second.decision_id);
   }
 
-  std::cout << "\n-- closing the session\n";
-  session->Close();
+  std::cout << "\n-- closing the agent\n";
+  agent.Close();
 
-  std::cout << "\nsession state: "
-            << session->ContextSnapshot().decision_count()
-            << " confirmed decision(s), " << session->pending_decision_count()
+  std::cout << "\nagent state: " << agent.ContextSnapshot().decision_count()
+            << " confirmed decision(s), " << agent.PendingDecisionCount()
             << " pending\n";
   return 0;
 }

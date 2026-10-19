@@ -211,14 +211,16 @@ Each module has its own test binary, so the linker checks the module boundary:
   building;
 - `tests/tools/` — `llm_tools_tests` (schema and batch validation);
 - `tests/context/` — `llm_context_tests` (snapshot replacement, decision
-  contiguity, budget trimming, staging, atomic confirmation, the
-  one-decision-at-a-time rule and asynchronous submission) driven by a scripted
-  `IModelProvider`, so it needs no provider and no TLS;
+  contiguity, budget trimming);
+- `tests/agent/` — `llm_agent_tests` (request shape, staging, atomic
+  confirmation, the one-decision-at-a-time rule, isolation between agents,
+  asynchronous submission and closing) driven by a scripted `IModelProvider`, so
+  it needs no provider and no TLS;
 - `tests/providers/openai/` — `llm_openai_tests` (request building, response
   parsing, provider status mapping, log events) against a fake transport,
   including one test that exercises the real cpp-httplib transport through a
   refused connection;
-- `tests/integration/` — `llm_integration_tests`: Session + Context + the
+- `tests/integration/` — `llm_integration_tests`: Agent + Context + the
   OpenAI provider end to end over a scripted transport, asserting the wire
   bodies of consecutive rounds; plus `console_logger_demo`, a program that
   prints a full decision round through the test-tree ConsoleLogger (run it with
@@ -331,7 +333,7 @@ for (const auto& warning : result.warnings) {         // e.g. a downgrade
 carry the protocol data unchanged.
 
 For the developer, as an event stream: the SDK emits records through an
-`llm::ILogger` injected via `SessionConfig::logger` and
+`llm::ILogger` injected via `AgentConfig::logger` and
 `ProviderOptions::logger` (see the README). The SDK ships no implementation —
 `tests/support/` has the two the tests use, and `console_logger_demo` prints a
 whole decision round:

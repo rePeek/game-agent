@@ -5,7 +5,7 @@
 /// The SDK defines only this interface and produces events; it ships no logger
 /// implementation, no formatting, no file handling and no third-party logging
 /// dependency. An application injects its own (a console printer in tests, its
-/// own logging system in production) through SessionConfig or ProviderOptions.
+/// own logging system in production) through AgentConfig or ProviderOptions.
 ///
 /// Rules the SDK follows when it emits:
 ///  * a null logger means no logging at all;

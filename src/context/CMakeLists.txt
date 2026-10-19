@@ -1,8 +1,9 @@
-# llm::context — per-session history and asynchronous decisions.
+# llm::context — the context history and the Agent that owns it.
 #
-# Depends on llm::core only: a Session is handed a std::shared_ptr<IModelProvider>
-# and never links a concrete provider, so a context-only build needs no HTTP or
-# TLS.
+# Depends on llm::core only: an Agent is handed a
+# std::shared_ptr<IModelProvider> and never links a concrete provider, so a
+# context-only build needs no HTTP and no TLS. agent.cpp lives at the src root
+# because the Agent is the SDK's front door, not a detail of Context.
 
 add_library(llm-context)
 add_library(llm::context ALIAS llm-context)
@@ -14,7 +15,6 @@ configure_llm_warnings(llm-context)
 target_sources(llm-context
     PRIVATE
         context.cpp
-        session.cpp
         ../agent.cpp
 )
 

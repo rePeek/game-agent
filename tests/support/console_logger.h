@@ -15,7 +15,7 @@ class ConsoleLogger final : public llm::ILogger {
   explicit ConsoleLogger(std::ostream& out = std::clog) : out_(out) {}
 
   void Log(const llm::LogRecord& record) override {
-    // Session workers can log concurrently, so the stream is guarded.
+    // Agent workers can log concurrently, so the stream is guarded.
     std::lock_guard<std::mutex> lock(mutex_);
     out_ << "[" << LevelName(record.level) << "] "
          << "[" << record.session_id << ":" << record.request_id << "] "

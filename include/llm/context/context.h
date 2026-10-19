@@ -73,7 +73,7 @@ struct RenderedContext {
 
 /// Owns the message history of one decision stream (one coach, one side).
 ///
-/// Thread-compatible but not thread-safe: the Session serializes access.
+/// Thread-compatible but not thread-safe: the Agent serializes access.
 class Context {
  public:
   explicit Context(ContextConfig config = {});
@@ -91,7 +91,7 @@ class Context {
 
   // --- confirmed decisions ------------------------------------------------
   /// Appends one complete decision. Contexts store what they are given: the
-  /// Session is what guarantees a record is complete before it lands here.
+  /// The Agent is what guarantees a record is complete before it lands here.
   void AppendDecision(DecisionRecord record);
   const std::vector<DecisionRecord>& decisions() const { return decisions_; }
   std::size_t decision_count() const { return decisions_.size(); }
