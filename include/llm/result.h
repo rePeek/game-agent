@@ -62,6 +62,10 @@ struct CompletionResult {
   /// only: it is never the success signal and is never validated.
   std::string assistant_text;
 
+  /// Non-fatal notes about how this completion was handled, e.g. that a
+  /// provider-side guarantee was downgraded to SDK-side validation.
+  std::vector<std::string> warnings;
+
   bool IsSuccess() const { return status == CompletionStatus::Success; }
   explicit operator bool() const { return IsSuccess(); }
   bool HasToolCalls() const { return !tool_calls.empty(); }

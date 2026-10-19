@@ -9,6 +9,7 @@
 #include "provider.h"
 #include "request.h"
 #include "result.h"
+#include "transport.h"
 #include "types.h"
 
 /// AI SDK C++ core — structured tool calling without chat bookkeeping.

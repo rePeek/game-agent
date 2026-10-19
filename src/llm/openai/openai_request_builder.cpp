@@ -1,0 +1,205 @@
+#include "openai_request_builder.h"
+
+#include <string>
+
+namespace llm {
+namespace openai {
+namespace detail {
+namespace {
+
+bool ParseSchema(const std::string& text,
+                 const std::string& tool_name,
+                 nlohmann::json& schema,
+                 std::string& error) {
+  if (text.empty()) {
+    schema = nlohmann::json::object();
+    return true;
+  }
+  schema = nlohmann::json::parse(text, nullptr, false);
+  if (schema.is_discarded()) {
+    error = "tool '" + tool_name +
+            "' has a parameters schema that is not valid JSON";
+    return false;
+  }
+  if (!schema.is_object()) {
+    error = "tool '" + tool_name + "' parameters schema must be a JSON object";
+    return false;
+  }
+  return true;
+}
+
+bool AppendMessage(const Message& message,
+                   nlohmann::json& out,
+                   std::string& error) {
+  nlohmann::json wire{{"role", WireRole(message.role)}};
+
+  switch (message.role) {
+    case Role::System:
+    case Role::User:
+      wire["content"] = message.content;
+      if (!message.name.empty()) {
+        wire["name"] = message.name;
+      }
+      break;
+
+    case Role::Assistant:
+      if (message.tool_calls.empty()) {
+        wire["content"] = message.content;
+      } else {
+        // A tool-only assistant turn must send null content, not "".
+        wire["content"] = message.content.empty()
+                              ? nlohmann::json(nullptr)
+                              : nlohmann::json(message.content);
+        nlohmann::json tool_calls = nlohmann::json::array();
+        for (const auto& call : message.tool_calls) {
+          if (call.name.empty()) {
+            error = "assistant message has a tool call without a name";
+            return false;
+          }
+          tool_calls.push_back(
+              {{"id", call.id},
+               {"type", "function"},
+               {"function",
+                {{"name", call.name}, {"arguments", call.arguments_json}}}});
+        }
+        wire["tool_calls"] = std::move(tool_calls);
+      }
+      if (!message.name.empty()) {
+        wire["name"] = message.name;
+      }
+      break;
+
+    case Role::Tool:
+      if (message.tool_call_id.empty()) {
+        error = "tool message is missing tool_call_id";
+        return false;
+      }
+      // OpenAI's tool message carries the id and the payload as text; `name`
+      // is not part of it.
+      wire["tool_call_id"] = message.tool_call_id;
+      wire["content"] = message.content;
+      break;
+  }
+
+  out.push_back(std::move(wire));
+  return true;
+}
+
+nlohmann::json BuildToolChoice(const ToolChoice& choice, std::string& error) {
+  switch (choice.mode) {
+    case ToolChoiceMode::Auto:
+      return "auto";
+    case ToolChoiceMode::Required:
+      return "required";
+    case ToolChoiceMode::None:
+      return "none";
+    case ToolChoiceMode::Specific:
+      if (choice.tool_name.empty()) {
+        error = "tool_choice is Specific but names no tool";
+        return nullptr;
+      }
+      return nlohmann::json{{"type", "function"},
+                            {"function", {{"name", choice.tool_name}}}};
+  }
+  error = "unknown tool_choice";
+  return nullptr;
+}
+
+bool IsGpt5Family(const std::string& model) {
+  return model.starts_with("gpt-5");
+}
+
+}  // namespace
+
+const char* WireRole(Role role) {
+  switch (role) {
+    case Role::System:
+      return "system";
+    case Role::User:
+      return "user";
+    case Role::Assistant:
+      return "assistant";
+    case Role::Tool:
+      return "tool";
+  }
+  return "user";
+}
+
+BuildOutcome BuildChatCompletionRequest(const ModelRequest& request) {
+  BuildOutcome outcome;
+
+  if (request.model.empty()) {
+    outcome.error = "request.model must not be empty";
+    return outcome;
+  }
+  if (request.messages.empty()) {
+    outcome.error = "request.messages must not be empty";
+    return outcome;
+  }
+
+  nlohmann::json body;
+  body["model"] = request.model;
+  body["messages"] = nlohmann::json::array();
+  for (const auto& message : request.messages) {
+    if (!AppendMessage(message, body["messages"], outcome.error)) {
+      return outcome;
+    }
+  }
+
+  if (!request.tools.empty()) {
+    nlohmann::json tools = nlohmann::json::array();
+    for (const auto& tool : request.tools) {
+      if (tool.name.empty()) {
+        outcome.error = "every tool definition needs a name";
+        return outcome;
+      }
+      nlohmann::json parameters;
+      if (!ParseSchema(tool.parameters_schema_json, tool.name, parameters,
+                       outcome.error)) {
+        return outcome;
+      }
+      nlohmann::json function{{"name", tool.name}, {"parameters", parameters}};
+      if (!tool.description.empty()) {
+        function["description"] = tool.description;
+      }
+      if (tool.strict) {
+        function["strict"] = true;
+      }
+      tools.push_back(
+          {{"type", "function"}, {"function", std::move(function)}});
+    }
+    body["tools"] = std::move(tools);
+  }
+
+  std::string choice_error;
+  nlohmann::json tool_choice =
+      BuildToolChoice(request.tool_choice, choice_error);
+  if (!choice_error.empty()) {
+    outcome.error = choice_error;
+    return outcome;
+  }
+  body["tool_choice"] = std::move(tool_choice);
+
+  if (request.max_tokens.has_value()) {
+    body["max_tokens"] = request.max_tokens.value();
+  }
+  if (request.seed.has_value()) {
+    body["seed"] = request.seed.value();
+  }
+  if (!IsGpt5Family(request.model)) {
+    if (request.temperature.has_value()) {
+      body["temperature"] = request.temperature.value();
+    }
+    if (request.top_p.has_value()) {
+      body["top_p"] = request.top_p.value();
+    }
+  }
+
+  outcome.ok = true;
+  outcome.body = std::move(body);
+  return outcome;
+}
+
+}  // namespace detail
+}  // namespace openai
+}  // namespace llm

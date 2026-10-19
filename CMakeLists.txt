@@ -102,7 +102,51 @@ target_sources(llm-core
         src/llm/core.cpp
 )
 
+# HTTP transport implementation (customed by the providers).
+add_library(llm-http)
+add_library(llm::http ALIAS llm-http)
+configure_ai_component(llm-http)
+
+target_sources(llm-http
+    PRIVATE
+        src/llm/http_transport_httplib.cpp
+)
+
+# OpenAI-compatible provider on top of the core and the HTTP transport.
+add_library(llm-openai)
+add_library(llm::openai ALIAS llm-openai)
+configure_ai_component(llm-openai)
+
+target_sources(llm-openai
+    PRIVATE
+        src/llm/openai/openai_provider.cpp
+        src/llm/openai/openai_request_builder.cpp
+        src/llm/openai/openai_response_parser.cpp
+)
+
 # Link dependencies
+
+target_link_libraries(llm-http
+    PUBLIC
+        llm::core
+    PRIVATE
+        $<BUILD_INTERFACE:httplib::httplib>
+        $<BUILD_INTERFACE:OpenSSL::SSL>
+        $<BUILD_INTERFACE:OpenSSL::Crypto>
+        $<INSTALL_INTERFACE:OpenSSL::SSL>
+        $<INSTALL_INTERFACE:OpenSSL::Crypto>
+        $<INSTALL_INTERFACE:Threads::Threads>
+)
+
+# JSON stays an implementation detail of the provider: its public header is
+# standard-library-only.
+target_link_libraries(llm-openai
+    PUBLIC
+        llm::core
+    PRIVATE
+        llm::http
+        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+)
 target_link_libraries(ai-sdk-cpp-core
     PUBLIC
         nlohmann_json::nlohmann_json
@@ -174,7 +218,7 @@ else()
 endif()
 
 # Apply common options to all component targets
-foreach(target ${COMPONENT_TARGETS} llm-core)
+foreach(target ${COMPONENT_TARGETS} llm-core llm-http llm-openai)
     target_compile_options(${target} PRIVATE 
         ${COMMON_WARNINGS}
         $<$<CONFIG:Debug>:${DEBUG_FLAGS}>
