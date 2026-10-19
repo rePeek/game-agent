@@ -5,10 +5,81 @@
 #include "llm/core/types.h"
 
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 
 namespace llm {
+namespace {
+
+/// Escapes a string for embedding in JSON text (RFC 8259). The core has no
+/// JSON library, so the one place it must emit text does the escaping itself.
+std::string EscapeJson(const std::string& value) {
+  std::string out;
+  out.reserve(value.size() + 2);
+  for (const char raw : value) {
+    const unsigned char byte = static_cast<unsigned char>(raw);
+    switch (byte) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (byte < 0x20) {
+          static const char kHex[] = "0123456789abcdef";
+          out += "\\u00";
+          out += kHex[(byte >> 4) & 0x0f];
+          out += kHex[byte & 0x0f];
+        } else {
+          out += static_cast<char>(byte);
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+/// The one model-visible rendering of a command result: success and failure
+/// share a shape, so the flag is actually transmitted instead of being implied
+/// by the payload.
+std::string FormatCommandResult(const CommandOutcome& outcome) {
+  std::string out;
+  if (outcome.success) {
+    out = "{\"ok\":true";
+    if (!outcome.content_json.empty()) {
+      out += ",\"result\":";
+      out += outcome.content_json;
+    }
+    out += "}";
+    return out;
+  }
+  out = "{\"ok\":false";
+  if (!outcome.error_message.empty()) {
+    out += ",\"error\":\"";
+    out += EscapeJson(outcome.error_message);
+    out += "\"";
+  }
+  if (!outcome.content_json.empty()) {
+    out += ",\"detail\":";
+    out += outcome.content_json;
+  }
+  out += "}";
+  return out;
+}
+
+}  // namespace
+
 
 std::string CommandCall::ToString() const {
   return "CommandCall{id='" + id + "', name='" + name +
@@ -46,7 +117,7 @@ Message Message::AssistantCommandCalls(std::vector<CommandCall> calls) {
 Message Message::CommandResultMessage(const llm::CommandResult& result) {
   Message message;
   message.role = Role::Tool;
-  message.content = result.outcome.content_json;
+  message.content = FormatCommandResult(result.outcome);
   message.command_call_id = result.command_call_id;
   message.name = result.name;
   return message;

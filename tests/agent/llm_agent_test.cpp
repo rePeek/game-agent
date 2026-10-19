@@ -430,5 +430,64 @@ TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
   EXPECT_EQ(record.command_results[1].command_call_id, "call_b");
 }
 
+TEST(LlmAgentTest, ResultsThatNameTheWrongCommandAreRejected) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  provider->next = TwoCallBatch();
+  Agent agent(provider, DefaultConfig());
+  ASSERT_TRUE(agent
+                  .RegisterCommand(
+                      "set_pressing_intensity", "",
+                      Params(Param<int>("level").Required()),
+                      [](int) { return CommandOutcome{true, {}, {}}; })
+                  .ok());
+  ASSERT_TRUE(agent
+                  .RegisterCommand(
+                      "set_defensive_line", "",
+                      Params(Param<std::string>("height").Required()),
+                      [](const std::string&) {
+                        return CommandOutcome{true, {}, {}};
+                      })
+                  .ok());
+
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
+  ASSERT_TRUE(decision.completion.IsSuccess());
+
+  // call_b is reported under the wrong command name.
+  EXPECT_EQ(agent.RecordCommandResults(
+                decision.decision_id,
+                {ResultFor("call_a"), ResultFor("call_b")}),
+            RecordOutcome::NameMismatch);
+  EXPECT_EQ(agent.PendingDecisionCount(), 1u) << "nothing was recorded";
+  EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
+}
+
+TEST(LlmAgentTest, FailedResultsAreRecordedAsExecutedFacts) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  provider->next = SuccessfulBatch();
+  Agent agent(provider, DefaultConfig());
+  ASSERT_TRUE(agent
+                  .RegisterCommand(
+                      "set_pressing_intensity", "",
+                      Params(Param<int>("level").Required()),
+                      [](int) { return CommandOutcome{true, {}, {}}; })
+                  .ok());
+
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
+  ASSERT_TRUE(decision.completion.IsSuccess());
+
+  CommandResult failed;
+  failed.command_call_id = "call_a";
+  failed.name = "set_pressing_intensity";
+  failed.outcome.success = false;
+  failed.outcome.error_message = "rejected_by_referee";
+  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id, {failed}),
+            RecordOutcome::Recorded);
+
+  const Context context = agent.ContextSnapshot();
+  ASSERT_EQ(context.decisions().size(), 1u);
+  const Message& message = context.decisions()[0].command_results[0];
+  EXPECT_EQ(message.content, R"({"ok":false,"error":"rejected_by_referee"})");
+}
+
 }  // namespace
 }  // namespace llm

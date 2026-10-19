@@ -205,7 +205,7 @@ TEST(LlmAgentOpenAITest, CommandResultsFeedTheNextRequest) {
             kWireArguments);
   EXPECT_EQ(body["messages"][2]["role"], "tool");
   EXPECT_EQ(body["messages"][2]["tool_call_id"], "call_a");
-  EXPECT_EQ(body["messages"][2]["content"], R"({"applied":true})");
+  EXPECT_EQ(body["messages"][2]["content"], R"({"ok":true,"result":{"applied":true}})");
   EXPECT_EQ(body["messages"][3]["role"], "tool");
   EXPECT_EQ(body["messages"][3]["tool_call_id"], "call_b");
   EXPECT_EQ(body["messages"][4]["role"], "user");

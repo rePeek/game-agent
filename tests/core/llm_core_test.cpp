@@ -61,7 +61,31 @@ TEST(LlmCoreMessageTest, CommandResultCarriesCallIdAndPayload) {
   EXPECT_EQ(message.role, Role::Tool);
   EXPECT_EQ(message.command_call_id, "call_001");
   EXPECT_EQ(message.name, "set_pressing_intensity");
-  EXPECT_EQ(message.content, R"({"applied":true,"intensity":3})");
+  EXPECT_EQ(message.content, R"({"ok":true,"result":{"applied":true,"intensity":3}})");
+}
+
+TEST(LlmCoreMessageTest, FailedCommandResultsCarryTheErrorNotAnImpliedFlag) {
+  CommandResult result;
+  result.command_call_id = "call_002";
+  result.name = "set_formation";
+  result.outcome.success = false;
+  result.outcome.error_message = "substitution_not_allowed";
+
+  const Message message = Message::CommandResultMessage(result);
+  EXPECT_EQ(message.content,
+            R"({"ok":false,"error":"substitution_not_allowed"})");
+
+  // A failure may still name what it observed.
+  result.outcome.content_json = R"({"minute":62})";
+  const Message detailed = Message::CommandResultMessage(result);
+  EXPECT_EQ(detailed.content,
+            R"({"ok":false,"error":"substitution_not_allowed","detail":{"minute":62}})");
+
+  // The error text is escaped before it becomes JSON.
+  result.outcome.error_message = "he said \"no\"";
+  result.outcome.content_json.clear();
+  const Message escaped = Message::CommandResultMessage(result);
+  EXPECT_EQ(escaped.content, R"({"ok":false,"error":"he said \"no\""})");
 }
 
 // The context protocol must be able to express a previous decision: the

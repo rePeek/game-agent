@@ -268,7 +268,7 @@ TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
   const auto& tool_message = built.body["messages"][3];
   EXPECT_EQ(tool_message["role"], "tool");
   EXPECT_EQ(tool_message["tool_call_id"], "call_001");
-  EXPECT_EQ(tool_message["content"], R"({"applied":true})");
+  EXPECT_EQ(tool_message["content"], R"({"ok":true,"result":{"applied":true}})");
   EXPECT_FALSE(tool_message.contains("name"))
       << "OpenAI tool messages carry no name";
 
@@ -854,7 +854,7 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
 
   EXPECT_EQ(messages[3]["role"], "tool");
   EXPECT_EQ(messages[3]["tool_call_id"], decision.command_calls[0].id);
-  EXPECT_EQ(messages[3]["content"], R"({"applied":true})");
+  EXPECT_EQ(messages[3]["content"], R"({"ok":true,"result":{"applied":true}})");
   EXPECT_EQ(messages[4]["tool_call_id"], decision.command_calls[1].id);
   EXPECT_EQ(messages[5]["role"], "user");
   EXPECT_EQ(messages[5]["content"], "Opponent switched to a low block.");
