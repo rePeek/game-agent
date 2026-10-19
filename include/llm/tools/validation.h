@@ -11,8 +11,8 @@
 /// The public surface stays standard-library-only: arguments and schemas are
 /// JSON text here, and the JSON parser lives in the implementation.
 
-#include "request.h"
-#include "types.h"
+#include "llm/core/request.h"
+#include "llm/core/types.h"
 
 #include <cstddef>
 #include <memory>

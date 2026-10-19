@@ -1,7 +1,7 @@
 #pragma once
 
+#include "llm/core/request.h"
 #include "llm/openai.h"
-#include "llm/request.h"
 
 #include <string>
 

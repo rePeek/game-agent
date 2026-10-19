@@ -1,7 +1,7 @@
 #pragma once
 
-#include "llm/result.h"
-#include "llm/types.h"
+#include "llm/core/result.h"
+#include "llm/core/types.h"
 
 #include <string>
 #include <vector>

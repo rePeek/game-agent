@@ -55,7 +55,8 @@ gtest_discover_tests(ai_tests
 # ---------------------------------------------------------------------------
 # llm:: core standalone check.
 #
-# This executable includes only <llm/core.h> and links only llm::core: no JSON,
+# This executable includes only the core headers and links only llm::core: no
+# JSON,
 # no HTTP, no TLS, not even a test framework. If the core ever grows a
 # third-party dependency, this target stops building.
 # ---------------------------------------------------------------------------

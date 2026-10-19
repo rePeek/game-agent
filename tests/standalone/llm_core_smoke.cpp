@@ -1,15 +1,20 @@
 // Standalone smoke test for the llm:: core.
 //
-// This translation unit includes only <llm/core.h> and the standard library,
-// and its target links only llm::core — no JSON, HTTP, TLS or test framework.
-// If the core ever grows a third-party dependency, this target stops building.
+// This translation unit includes only the llm:: core headers and the standard
+// library, and its target links only llm::core — no JSON, HTTP, TLS or test
+// framework. If the core ever grows a third-party dependency, this target stops
+// building.
 
 #include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include <llm/core.h>
+#include <llm/core/message.h>
+#include <llm/core/provider.h>
+#include <llm/core/request.h>
+#include <llm/core/result.h>
+#include <llm/core/types.h>
 
 namespace {
 

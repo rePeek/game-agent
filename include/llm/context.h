@@ -22,8 +22,9 @@
 ///
 /// The rendering is deterministic: no summarization, no model calls.
 
-#include "request.h"
-#include "types.h"
+#include "llm/core/message.h"
+#include "llm/core/request.h"
+#include "llm/core/types.h"
 
 #include <cstddef>
 #include <cstdint>

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "types.h"
+#include "llm/core/message.h"
+#include "llm/core/types.h"
 
 #include <optional>
 #include <string>

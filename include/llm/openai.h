@@ -1,9 +1,9 @@
 #pragma once
 
-#include "provider.h"
+#include "llm/core/provider.h"
+#include "llm/core/types.h"
+#include "llm/tools/validation.h"
 #include "transport.h"
-#include "types.h"
-#include "validation.h"
 
 #include <memory>
 #include <optional>

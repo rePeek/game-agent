@@ -47,7 +47,7 @@ configure_llm_component(llm-core)
 
 target_sources(llm-core
     PRIVATE
-        src/llm/core.cpp
+        src/core/core.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ configure_llm_component(llm-validation)
 
 target_sources(llm-validation
     PRIVATE
-        src/llm/validation.cpp
+        src/tools/validation.cpp
 )
 
 target_link_libraries(llm-validation

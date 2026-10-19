@@ -1,4 +1,7 @@
-#include "llm/core.h"
+#include "llm/core/message.h"
+#include "llm/core/request.h"
+#include "llm/core/result.h"
+#include "llm/core/types.h"
 
 #include <utility>
 

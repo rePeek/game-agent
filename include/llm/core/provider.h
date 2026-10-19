@@ -1,7 +1,7 @@
 #pragma once
 
-#include "request.h"
-#include "result.h"
+#include "llm/core/request.h"
+#include "llm/core/result.h"
 
 #include <string>
 

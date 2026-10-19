@@ -6,7 +6,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <llm/validation.h>
+#include <llm/tools/validation.h>
 
 namespace llm {
 namespace {
