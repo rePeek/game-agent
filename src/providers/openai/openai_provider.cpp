@@ -1,7 +1,7 @@
-#include "llm/http.h"
-#include "llm/openai.h"
-#include "openai_request_builder.h"
-#include "openai_response_parser.h"
+#include "http_transport.h"
+#include "llm/providers/openai/openai.h"
+#include "request_builder.h"
+#include "response_parser.h"
 
 #include <algorithm>
 #include <chrono>

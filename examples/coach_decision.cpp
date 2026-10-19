@@ -24,7 +24,7 @@
 #include <llm/core/request.h>
 #include <llm/core/result.h>
 #include <llm/core/types.h>
-#include <llm/openai.h>
+#include <llm/providers/openai/openai.h>
 
 namespace {
 

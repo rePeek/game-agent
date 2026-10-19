@@ -1,4 +1,4 @@
-#include "openai_response_parser.h"
+#include "response_parser.h"
 
 #include <string>
 

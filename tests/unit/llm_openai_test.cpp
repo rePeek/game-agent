@@ -2,8 +2,8 @@
 // parsing and status mapping. Everything runs against a scripted transport, so
 // no network and no API key are involved.
 
-#include "llm/openai/openai_request_builder.h"
-#include "llm/openai/openai_response_parser.h"
+#include "providers/openai/request_builder.h"
+#include "providers/openai/response_parser.h"
 
 #include <memory>
 #include <string>
@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <llm/openai.h>
+#include <llm/providers/openai/openai.h>
 #include <nlohmann/json.hpp>
 
 namespace llm {

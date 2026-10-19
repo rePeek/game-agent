@@ -2,8 +2,8 @@
 
 #include "llm/core/provider.h"
 #include "llm/core/types.h"
+#include "llm/providers/openai/transport.h"
 #include "llm/tools/validation.h"
-#include "transport.h"
 
 #include <memory>
 #include <optional>

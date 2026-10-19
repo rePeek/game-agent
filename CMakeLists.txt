@@ -96,33 +96,10 @@ target_link_libraries(llm-context
 )
 
 # ---------------------------------------------------------------------------
-# llm::http — HTTP/HTTPS transport implementation (cpp-httplib + OpenSSL).
-# ---------------------------------------------------------------------------
-add_library(llm-http)
-add_library(llm::http ALIAS llm-http)
-set_target_properties(llm-http PROPERTIES EXPORT_NAME http)
-configure_llm_component(llm-http)
-
-target_sources(llm-http
-    PRIVATE
-        src/llm/http_transport_httplib.cpp
-)
-
-# httplib is internal: only OpenSSL and Threads have to be found by a consumer.
-target_link_libraries(llm-http
-    PUBLIC
-        llm::core
-    PRIVATE
-        $<BUILD_INTERFACE:httplib::httplib>
-        $<BUILD_INTERFACE:OpenSSL::SSL>
-        $<BUILD_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:OpenSSL::SSL>
-        $<INSTALL_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:Threads::Threads>
-)
-
-# ---------------------------------------------------------------------------
 # llm::openai — OpenAI-compatible Chat Completions provider.
+#
+# It owns its HTTP transport: cpp-httplib and OpenSSL are implementation
+# details of this provider, not a module of their own.
 # ---------------------------------------------------------------------------
 add_library(llm-openai)
 add_library(llm::openai ALIAS llm-openai)
@@ -131,18 +108,27 @@ configure_llm_component(llm-openai)
 
 target_sources(llm-openai
     PRIVATE
-        src/llm/openai/openai_provider.cpp
-        src/llm/openai/openai_request_builder.cpp
-        src/llm/openai/openai_response_parser.cpp
+        src/providers/openai/openai_provider.cpp
+        src/providers/openai/request_builder.cpp
+        src/providers/openai/response_parser.cpp
+        src/providers/openai/http_transport_httplib.cpp
 )
 
+# httplib and nlohmann/json are build-time only: a consumer of the installed
+# provider needs OpenSSL and Threads, which is what the INSTALL_INTERFACE
+# entries below export.
 target_link_libraries(llm-openai
     PUBLIC
         llm::core
         llm::validation
     PRIVATE
-        llm::http
+        $<BUILD_INTERFACE:httplib::httplib>
         $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+        $<BUILD_INTERFACE:OpenSSL::SSL>
+        $<BUILD_INTERFACE:OpenSSL::Crypto>
+        $<INSTALL_INTERFACE:OpenSSL::SSL>
+        $<INSTALL_INTERFACE:OpenSSL::Crypto>
+        $<INSTALL_INTERFACE:Threads::Threads>
 )
 
 # ---------------------------------------------------------------------------
@@ -163,7 +149,6 @@ target_link_libraries(llm-sdk
         llm::core
         llm::validation
         llm::context
-        llm::http
         llm::openai
 )
 
@@ -172,7 +157,6 @@ set(LLM_CONCRETE_TARGETS
     llm-core
     llm-validation
     llm-context
-    llm-http
     llm-openai
 )
 

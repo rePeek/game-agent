@@ -10,7 +10,7 @@
 #include <gtest/gtest.h>
 #include <llm/context/context.h>
 #include <llm/context/session.h>
-#include <llm/openai.h>
+#include <llm/providers/openai/openai.h>
 #include <nlohmann/json.hpp>
 
 namespace llm {
