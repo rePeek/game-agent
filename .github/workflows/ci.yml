@@ -39,5 +39,3 @@ jobs:
     - name: Run tests
       working-directory: build
       run: ctest --build-config ${{ matrix.build_type == 'debug' && 'Debug' || 'Release' }} --output-on-failure --parallel
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

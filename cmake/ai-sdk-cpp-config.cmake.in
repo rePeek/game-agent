@@ -1,6 +1,10 @@
 @PACKAGE_INIT@
 
-# AI SDK C++ Package Configuration
+# AI SDK C++ package configuration.
+#
+# Installed targets (namespace llm::): core, validation, http, openai, sdk.
+# cpp-httplib and nlohmann/json are private implementation details, so a
+# consumer only needs OpenSSL and Threads.
 
 include(CMakeFindDependencyMacro)
 find_dependency(OpenSSL REQUIRED)
@@ -8,66 +12,50 @@ find_dependency(Threads REQUIRED)
 
 set(AI_SDK_VERSION "@PROJECT_VERSION@")
 
-# Find PUBLIC dependencies only
-find_dependency(nlohmann_json CONFIG REQUIRED)
-
 # Include the targets file
 include("${CMAKE_CURRENT_LIST_DIR}/ai-sdk-cpp-targets.cmake")
 
 # Available components
-set(AI_SDK_AVAILABLE_COMPONENTS core openai)
+set(AI_SDK_AVAILABLE_COMPONENTS core validation http openai sdk)
 
 # Check requested components
 set(AI_SDK_REQUESTED_COMPONENTS ${ai-sdk-cpp_FIND_COMPONENTS})
 
-# If no components requested, use all available
-set(AI_SDK_USE_UMBRELLA_TARGET FALSE)
+# If no components were requested, use all of them.
 if(NOT AI_SDK_REQUESTED_COMPONENTS)
     set(AI_SDK_REQUESTED_COMPONENTS ${AI_SDK_AVAILABLE_COMPONENTS})
-    set(AI_SDK_USE_UMBRELLA_TARGET TRUE)
 endif()
 
-# Check that all requested components are available
 foreach(component ${AI_SDK_REQUESTED_COMPONENTS})
     if(NOT component IN_LIST AI_SDK_AVAILABLE_COMPONENTS)
         set(ai-sdk-cpp_FOUND FALSE)
         set(ai-sdk-cpp_NOT_FOUND_MESSAGE "Unsupported component: ${component}")
         return()
     endif()
-    
-    # Check if component target exists
-    set(component_target "ai::${component}")
+
+    set(component_target "llm::${component}")
     if(NOT TARGET ${component_target})
         set(ai-sdk-cpp_FOUND FALSE)
         set(ai-sdk-cpp_NOT_FOUND_MESSAGE "Component target ${component_target} not found")
         return()
     endif()
-    
-    # Mark component as found
+
     set(ai-sdk-cpp_${component}_FOUND TRUE)
 endforeach()
 
-# Check that all components are available
 check_required_components(ai-sdk-cpp)
 
-# Set convenience variables
+# Convenience variables
 set(AI_SDK_FOUND TRUE)
 set(AI_SDK_LIBRARIES)
 set(AI_SDK_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
 
-# Add requested component libraries
 foreach(component ${AI_SDK_REQUESTED_COMPONENTS})
-    list(APPEND AI_SDK_LIBRARIES ai::${component})
+    list(APPEND AI_SDK_LIBRARIES llm::${component})
 endforeach()
 
-# Add the umbrella library only when no specific components were requested.
-if(AI_SDK_USE_UMBRELLA_TARGET)
-    list(APPEND AI_SDK_LIBRARIES ai::sdk)
-endif()
-
-# Provide information about the package
-if(NOT TARGET ai::core)
-    message(FATAL_ERROR "ai::core target not found. Make sure ai-sdk-cpp was properly installed.")
+if(NOT TARGET llm::core)
+    message(FATAL_ERROR "llm::core target not found. Make sure ai-sdk-cpp was installed properly.")
 endif()
 
 message(STATUS "Found AI SDK C++: ${CMAKE_CURRENT_LIST_DIR} (found version \"${AI_SDK_VERSION}\")")

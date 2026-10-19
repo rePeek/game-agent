@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Project definition
-project(ai-sdk-cpp 
+project(ai-sdk-cpp
     VERSION 0.1.0
-    DESCRIPTION "A unified C++ SDK for multiple AI/LLM providers"
+    DESCRIPTION "Structured tool-calling C++ SDK for OpenAI-compatible models"
     LANGUAGES CXX
 )
 
@@ -17,14 +17,14 @@ option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
 
-# Add third party directory (vendored and CMake-fetched dependencies)
+# Third-party dependencies: a vendored cpp-httplib header, nlohmann/json
+# (reused, found or fetched) and GoogleTest when tests are enabled.
 add_subdirectory(third_party)
 
-# Find system OpenSSL
 find_package(OpenSSL REQUIRED)
 
-# Helper function to configure component libraries
-function(configure_ai_component target_name)
+# Public headers live in include/, implementation details in src/.
+function(configure_llm_component target_name)
     target_include_directories(${target_name}
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -34,109 +34,59 @@ function(configure_ai_component target_name)
     )
 endfunction()
 
-# Common compile definitions for HTTP support
-set(HTTPLIB_COMPILE_DEFS
-    CPPHTTPLIB_OPENSSL_SUPPORT=1
-)
-
-# Create libraries
-add_library(ai-sdk-cpp-core)
-add_library(ai-sdk-cpp-openai)
-add_library(ai-sdk-cpp INTERFACE)
-
-# Keep installed target names consistent with the build-tree aliases.
-set_target_properties(ai-sdk-cpp-core PROPERTIES EXPORT_NAME core)
-set_target_properties(ai-sdk-cpp-openai PROPERTIES EXPORT_NAME openai)
-set_target_properties(ai-sdk-cpp PROPERTIES EXPORT_NAME sdk)
-
-# Set library aliases
-add_library(ai::sdk ALIAS ai-sdk-cpp)
-add_library(ai::core ALIAS ai-sdk-cpp-core)
-add_library(ai::openai ALIAS ai-sdk-cpp-openai)
-
-# Configure all component libraries
-configure_ai_component(ai-sdk-cpp-core)
-configure_ai_component(ai-sdk-cpp-openai)
-
-# Configure main interface library
-target_include_directories(ai-sdk-cpp 
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-)
-
-# Core component sources
-target_sources(ai-sdk-cpp-core
-    PRIVATE
-        # Type implementations
-        src/types/generate_options.cpp
-        src/types/message.cpp
-        
-        # HTTP and base provider infrastructure
-        src/http/http_request_handler.cpp
-        src/providers/base_provider_client.cpp
-)
-
-# Provider-specific sources
-target_sources(ai-sdk-cpp-openai
-    PRIVATE
-        src/providers/openai/openai_client.cpp
-        src/providers/openai/openai_request_builder.cpp
-        src/providers/openai/openai_response_parser.cpp
-        src/providers/openai/openai_factory.cpp
-)
-
 # ---------------------------------------------------------------------------
-# llm:: core — the protocol surface.
+# llm::core — request, message, tool-call and completion vocabulary.
 #
-# Deliberately STL-only: no JSON, no HTTP, no TLS. It is built next to the
-# legacy ai:: components while the migration is in progress, and is not part of
-# the installed export set yet (that is finalised once the legacy API is gone).
+# Deliberately standard-library-only: the core has no JSON, HTTP or TLS
+# dependency, so it can be embedded anywhere and providers translate to it.
 # ---------------------------------------------------------------------------
 add_library(llm-core)
 add_library(llm::core ALIAS llm-core)
-configure_ai_component(llm-core)
+set_target_properties(llm-core PROPERTIES EXPORT_NAME core)
+configure_llm_component(llm-core)
 
 target_sources(llm-core
     PRIVATE
         src/llm/core.cpp
 )
 
-# HTTP transport implementation (customed by the providers).
-add_library(llm-http)
-add_library(llm::http ALIAS llm-http)
-configure_ai_component(llm-http)
-
-target_sources(llm-http
-    PRIVATE
-        src/llm/http_transport_httplib.cpp
-)
-
-# OpenAI-compatible provider on top of the core and the HTTP transport.
-add_library(llm-openai)
-add_library(llm::openai ALIAS llm-openai)
-configure_ai_component(llm-openai)
-
-target_sources(llm-openai
-    PRIVATE
-        src/llm/openai/openai_provider.cpp
-        src/llm/openai/openai_request_builder.cpp
-        src/llm/openai/openai_response_parser.cpp
-)
-
-# Tool-call validation: standard-library-only interface, JSON in the
-# implementation only.
+# ---------------------------------------------------------------------------
+# llm::validation — tool-call validation.
+#
+# The public header is standard-library-only (JSON text in, report out); the
+# JSON parser is an implementation detail.
+# ---------------------------------------------------------------------------
 add_library(llm-validation)
 add_library(llm::validation ALIAS llm-validation)
-configure_ai_component(llm-validation)
+set_target_properties(llm-validation PROPERTIES EXPORT_NAME validation)
+configure_llm_component(llm-validation)
 
 target_sources(llm-validation
     PRIVATE
         src/llm/validation.cpp
 )
 
-# Link dependencies
+target_link_libraries(llm-validation
+    PUBLIC
+        llm::core
+    PRIVATE
+        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+)
 
+# ---------------------------------------------------------------------------
+# llm::http — HTTP/HTTPS transport implementation (cpp-httplib + OpenSSL).
+# ---------------------------------------------------------------------------
+add_library(llm-http)
+add_library(llm::http ALIAS llm-http)
+set_target_properties(llm-http PROPERTIES EXPORT_NAME http)
+configure_llm_component(llm-http)
+
+target_sources(llm-http
+    PRIVATE
+        src/llm/http_transport_httplib.cpp
+)
+
+# httplib is internal: only OpenSSL and Threads have to be found by a consumer.
 target_link_libraries(llm-http
     PUBLIC
         llm::core
@@ -149,17 +99,21 @@ target_link_libraries(llm-http
         $<INSTALL_INTERFACE:Threads::Threads>
 )
 
-# JSON stays an implementation detail of the provider: its public header is
-# standard-library-only.
-target_link_libraries(llm-validation
-    PUBLIC
-        llm::core
+# ---------------------------------------------------------------------------
+# llm::openai — OpenAI-compatible Chat Completions provider.
+# ---------------------------------------------------------------------------
+add_library(llm-openai)
+add_library(llm::openai ALIAS llm-openai)
+set_target_properties(llm-openai PROPERTIES EXPORT_NAME openai)
+configure_llm_component(llm-openai)
+
+target_sources(llm-openai
     PRIVATE
-        $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+        src/llm/openai/openai_provider.cpp
+        src/llm/openai/openai_request_builder.cpp
+        src/llm/openai/openai_response_parser.cpp
 )
 
-# JSON stays an implementation detail of the provider: its public header is
-# standard-library-only.
 target_link_libraries(llm-openai
     PUBLIC
         llm::core
@@ -168,60 +122,38 @@ target_link_libraries(llm-openai
         llm::http
         $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
-target_link_libraries(ai-sdk-cpp-core
-    PUBLIC
-        nlohmann_json::nlohmann_json
-    PRIVATE
-        $<BUILD_INTERFACE:httplib::httplib>
-        $<BUILD_INTERFACE:OpenSSL::SSL>
-        $<BUILD_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:OpenSSL::SSL>
-        $<INSTALL_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:Threads::Threads>
-)
 
-# OpenAI component links to core and shares the common dependencies
-target_link_libraries(ai-sdk-cpp-openai
-    PUBLIC
-        ai::core
-        nlohmann_json::nlohmann_json
-    PRIVATE
-        $<BUILD_INTERFACE:httplib::httplib>
-        $<INSTALL_INTERFACE:OpenSSL::SSL>
-        $<INSTALL_INTERFACE:OpenSSL::Crypto>
-        $<INSTALL_INTERFACE:Threads::Threads>
-)
-target_compile_definitions(ai-sdk-cpp-openai
-    PUBLIC
-        AI_SDK_HAS_OPENAI=1
-    PRIVATE
-        ${HTTPLIB_COMPILE_DEFS}
-)
+# ---------------------------------------------------------------------------
+# llm::sdk — everything the SDK ships.
+# ---------------------------------------------------------------------------
+add_library(llm-sdk INTERFACE)
+add_library(llm::sdk ALIAS llm-sdk)
+set_target_properties(llm-sdk PROPERTIES EXPORT_NAME sdk)
 
-# Core needs HTTP definitions too
-target_compile_definitions(ai-sdk-cpp-core
-    PRIVATE
-        ${HTTPLIB_COMPILE_DEFS}
-)
-
-# Main library links all components
-target_link_libraries(ai-sdk-cpp
+target_include_directories(llm-sdk
     INTERFACE
-        ai::core
-        ai::openai
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
 )
 
-# Define all component availability for main library
-target_compile_definitions(ai-sdk-cpp
+target_link_libraries(llm-sdk
     INTERFACE
-        AI_SDK_HAS_OPENAI=1
+        llm::core
+        llm::validation
+        llm::http
+        llm::openai
 )
 
-# List of all concrete component targets
-set(COMPONENT_TARGETS
-    ai-sdk-cpp-core
-    ai-sdk-cpp-openai
+# Concrete (non-INTERFACE) targets: these take compile options and definitions.
+set(LLM_CONCRETE_TARGETS
+    llm-core
+    llm-validation
+    llm-http
+    llm-openai
 )
+
+# Everything that is installed and exported.
+set(LLM_TARGETS ${LLM_CONCRETE_TARGETS} llm-sdk)
 
 # Common compile options
 if(MSVC)
@@ -238,14 +170,13 @@ else()
     endif()
 endif()
 
-# Apply common options to all component targets
-foreach(target ${COMPONENT_TARGETS} llm-core llm-http llm-openai llm-validation)
-    target_compile_options(${target} PRIVATE 
+foreach(target ${LLM_CONCRETE_TARGETS})
+    target_compile_options(${target} PRIVATE
         ${COMMON_WARNINGS}
         $<$<CONFIG:Debug>:${DEBUG_FLAGS}>
         $<$<CONFIG:Release>:${RELEASE_FLAGS}>
     )
-    
+
     target_compile_definitions(${target} PRIVATE
         $<$<CONFIG:Debug>:AI_SDK_DEBUG=1>
         $<$<CONFIG:Release>:AI_SDK_RELEASE=1;NDEBUG>
@@ -267,9 +198,7 @@ endif()
 # Installation rules
 include(GNUInstallDirs)
 
-# Install all targets (httplib is internal only, not installed)
-set(ALL_TARGETS ${COMPONENT_TARGETS} ai-sdk-cpp)
-install(TARGETS ${ALL_TARGETS}
+install(TARGETS ${LLM_TARGETS}
     EXPORT ai-sdk-cpp-targets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -277,20 +206,18 @@ install(TARGETS ${ALL_TARGETS}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-# Install headers
 install(DIRECTORY include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
 )
 
-# Export targets
+# Export targets under the llm:: namespace (llm::core, llm::openai, ...).
 install(EXPORT ai-sdk-cpp-targets
     FILE ai-sdk-cpp-targets.cmake
-    NAMESPACE ai::
+    NAMESPACE llm::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp
 )
 
-# Create and install config file
 include(CMakePackageConfigHelpers)
 
 configure_package_config_file(

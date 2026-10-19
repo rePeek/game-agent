@@ -22,7 +22,9 @@ else()
     include(FetchContent)
 
     set(JSON_BuildTests OFF CACHE INTERNAL "Disable nlohmann/json tests")
-    set(JSON_Install ON CACHE INTERNAL "Install nlohmann/json with the SDK")
+    # The SDK never exposes nlohmann/json in a public header, so it is not
+    # installed with it: a consumer needs OpenSSL and Threads only.
+    set(JSON_Install OFF CACHE INTERNAL "Do not install nlohmann/json")
 
     FetchContent_Declare(nlohmann_json
         URL https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz

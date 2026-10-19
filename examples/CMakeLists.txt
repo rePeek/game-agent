@@ -1,70 +1,31 @@
 # Examples for AI SDK C++
 
 # Helper function to create examples
-function(add_ai_example name source_file)
+function(add_llm_example name source_file)
     add_executable(${name} ${source_file})
-    target_link_libraries(${name} PRIVATE ai::sdk)
-    
-    # Set output directory
+    target_link_libraries(${name} PRIVATE llm::sdk)
+
     set_target_properties(${name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
     )
-    
-    # Copy to examples directory for easy running
+
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(EXAMPLE_SUFFIX "_debug")
     else()
         set(EXAMPLE_SUFFIX "")
     endif()
-    
+
     set_target_properties(${name} PROPERTIES
         OUTPUT_NAME "${name}${EXAMPLE_SUFFIX}"
     )
 endfunction()
 
-# Basic chat example
-add_ai_example(basic_chat basic_chat.cpp)
+# One completion, one validated decision batch, dispatched by the game.
+add_llm_example(coach_decision coach_decision.cpp)
 
-
-# Multi-provider comparison
-add_ai_example(multi_provider multi_provider.cpp)
-
-# Error handling demonstration
-add_ai_example(error_handling error_handling.cpp)
-
-# Retry configuration example
-add_ai_example(retry_config_example retry_config_example.cpp)
-
-# Simple test examples
-add_ai_example(test_openai test_openai.cpp)
-
-# OpenRouter example (OpenAI-compatible)
-add_ai_example(openrouter_example openrouter_example.cpp)
-
-# Tool calling examples
-add_ai_example(tool_calling_basic tool_calling_basic.cpp)
-
-# Component-specific examples
-add_subdirectory(components/openai)
-add_subdirectory(components/all)
-
-# Message to show how to run examples
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(EXAMPLE_DISPLAY_SUFFIX "_debug")
-else()
-    set(EXAMPLE_DISPLAY_SUFFIX "")
-endif()
+# The same flow without a network, using a scripted transport.
+add_llm_example(offline_transport offline_transport.cpp)
 
 message(STATUS "Examples will be built in: ${CMAKE_BINARY_DIR}/examples/")
-message(STATUS "To run examples:")
-message(STATUS "  Set environment variables: OPENAI_API_KEY, OPENROUTER_API_KEY")
-message(STATUS "  Run: ./examples/basic_chat${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/streaming_chat${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/multi_provider${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/error_handling${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/test_openai${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/openrouter_example${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "")
-message(STATUS "Component-specific examples:")
-message(STATUS "  ./examples/components/openai/openai_component_demo     (OpenAI + Core only)")
-message(STATUS "  ./examples/components/all/all_components_demo          (All components)")
+message(STATUS "  ./examples/coach_decision      (needs OPENAI_API_KEY)")
+message(STATUS "  ./examples/offline_transport   (no key, no network)")

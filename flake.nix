@@ -26,14 +26,11 @@
       #     `scripts/format.py`, `scripts/lint.py` and editor integration.
       #   * uv + python3 — the scripts under scripts/ are PEP 723 scripts run
       #     with `uv run`.
-      #   * openssl/zlib — the project links OpenSSL and zlib. zlib itself is
-      #     also fetched by CMake (third_party/zlib-cmake), but having it in the
-      #     shell keeps `find_package(ZLIB)` happy for third-party code.
-      #   * Zstd/LZ4/cityhash/abseil are *not* listed: clickhouse-cpp (test-only
-      #     dependency) vendors them by default (WITH_SYSTEM_* = OFF).
-      #   * GoogleTest and clickhouse-cpp are downloaded by CMake's
-      #     FetchContent during configure, hence the need for network access in
-      #     the shell — that is expected and works fine outside the Nix sandbox.
+      #   * openssl — the HTTP transport links it (zlib was dropped with the
+      #     streaming support, and clickhouse-cpp with its integration test).
+      #   * nlohmann/json and GoogleTest are resolved or fetched by CMake
+      #     during configure, hence the need for network access in the shell —
+      #     that is expected and works fine outside the Nix sandbox.
       commonInputs =
         pkgs:
         with pkgs;
@@ -51,7 +48,6 @@
 
           # Libraries resolved via find_package()
           openssl
-          zlib
 
           # Script runner and interpreter for scripts/*.py
           uv

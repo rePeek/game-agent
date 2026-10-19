@@ -182,7 +182,8 @@ uv run scripts/lint.py --jobs 8
 
 ### Running Tests
 
-After building with tests enabled:
+The test suite is hermetic: providers are driven through a scripted
+transport, so it needs no API key and no network.
 
 ```bash
 cd build
@@ -193,37 +194,58 @@ ctest
 # Verbose output
 ctest --verbose
 
-# Run specific test
-ctest -R "test_types"
+# Run the protocol tests only
+ctest -R "Llm"
 
 # Parallel test execution
 ctest --parallel $(nproc)
 ```
 
-### Test Dependencies
+The suite is made of:
 
-Tests use Google Test framework, which is automatically fetched when you build with tests enabled:
+- `tests/unit/llm_core_test.cpp` — the standard-library-only core types;
+- `tests/unit/llm_openai_test.cpp` — request building, response parsing and
+  provider status mapping against a fake transport, including one test that
+  exercises the real cpp-httplib transport through a refused connection;
+- `tests/unit/llm_validation_test.cpp` — the tool-call validator;
+- `tests/standalone/llm_core_smoke.cpp` — a target that links only
+  `llm::core` (no JSON, no HTTP, no TLS, not even a test framework). If the
+  core ever grows a third-party dependency, it stops building.
+
+GoogleTest is fetched by CMake FetchContent when tests are enabled:
 
 ```bash
 uv run scripts/build.py --tests
 ```
 
-The build system downloads and configures Google Test via CMake FetchContent.
-
 ### Writing Tests
 
-Create test files in the `tests/` directory following the pattern:
+Add the file under `tests/unit/` and list it in `tests/CMakeLists.txt`. The
+provider takes its transport from `ProviderOptions`, so a test can script
+responses instead of hitting the API:
 
 ```cpp
 #include <gtest/gtest.h>
-#include <ai/types.h>
+#include <llm/openai.h>
 
-TEST(TypesTest, BasicFunctionality) {
-    // Your test code here
-    EXPECT_EQ(expected, actual);
+class ScriptedTransport : public llm::ITransport {
+ public:
+  llm::HttpResponse Send(const llm::HttpRequest&) override {
+    llm::HttpResponse response;
+    response.transport_ok = true;
+    response.status = 200;
+    response.body = R"({"choices":[{"message":{"tool_calls":[]}}]})";
+    return response;
+  }
+};
+
+TEST(MyProviderTest, RejectsAnEmptyBatch) {
+  llm::openai::ProviderOptions options;
+  options.api_key = "scripted";
+  options.transport = std::make_shared<ScriptedTransport>();
+  // ...
 }
 ```
-
 ## Code Quality
 
 ### Formatting Standards
@@ -263,164 +285,47 @@ uv run scripts/lint.py
 cd build && ctest
 ```
 
-## Logging
+## Diagnostics
 
-### Configuring Log Levels
-
-AI SDK C++ uses a built-in logging system defined in `ai/logger.h`.
-
-### Setting Log Levels
-
-You can control the logging verbosity by configuring the logger in your application:
+The SDK does not log. Every call reports what happened on the returned
+`llm::CompletionResult`, which the application can log however it likes:
 
 ```cpp
-#include "ai/logger.h"
+const llm::CompletionResult result = provider->Complete(request);
 
-// In your main() or initialization code:
-
-// Enable debug logging (most verbose)
-ai::logger::install_logger(
-    std::make_shared<ai::logger::ConsoleLogger>(ai::logger::LogLevel::kLogLevelDebug)
-);
-
-// Enable info logging (operational information)
-ai::logger::install_logger(
-    std::make_shared<ai::logger::ConsoleLogger>(ai::logger::LogLevel::kLogLevelInfo)
-);
-
-// Enable warning logging (default)
-ai::logger::install_logger(
-    std::make_shared<ai::logger::ConsoleLogger>(ai::logger::LogLevel::kLogLevelWarn)
-);
-
-// Enable error logging only
-ai::logger::install_logger(
-    std::make_shared<ai::logger::ConsoleLogger>(ai::logger::LogLevel::kLogLevelError)
-);
+std::cout << llm::ToString(result.status) << "\n";
+if (!result.IsSuccess()) {
+  std::cout << result.ErrorMessage() << "\n";        // human readable
+  if (result.error) {
+    std::cout << llm::ToString(result.error->kind)      // network/auth/...
+              << " retryable: " << result.error->retryable
+              << " http: " << result.error->http_status << "\n";
+  }
+}
+for (const auto& warning : result.warnings) {         // e.g. a downgrade
+  std::cout << "warning: " << warning << "\n";
+}
 ```
 
-### Available Log Levels
-
-From most to least verbose:
-
-1. **debug**: Detailed flow information, request/response bodies, connection details
-2. **info**: Important operational events (successful completions, stream events)
-3. **warn**: Warning conditions that don't prevent operation
-4. **error**: Error conditions and exceptions
-
-### Null Logger
-
-To disable all logging, you can install a null logger:
-
-```cpp
-ai::logger::install_logger(
-    std::make_shared<ai::logger::NullLogger>()
-);
-```
-
-### Example Log Output
-
-With **debug** level enabled:
-
-```
-[2024-01-01 12:00:00.123] [debug] Initializing OpenAI client with base_url: https://api.openai.com
-[2024-01-01 12:00:00.124] [debug] OpenAI client configured - host: api.openai.com, use_ssl: true
-[2024-01-01 12:00:00.125] [debug] Starting text generation - model: gpt-5.6, prompt length: 42
-[2024-01-01 12:00:00.126] [debug] Request JSON built: {"model":"gpt-5.6","messages":[...]}
-[2024-01-01 12:00:00.127] [debug] Creating SSL client for host: api.openai.com
-[2024-01-01 12:00:01.234] [debug] Received response - status: 200, body length: 1234
-[2024-01-01 12:00:01.235] [info] Text generation successful - model: gpt-5.6, response_id: chatcmpl-abc123
-```
-
-With **info** level enabled:
-
-```
-[2024-01-01 12:00:01.235] [info] Text generation successful - model: gpt-5.6, response_id: chatcmpl-abc123
-[2024-01-01 12:00:01.236] [info] Model made 1 tool call
-```
-
-### Custom Logger Configuration
-
-You can create your own logger by implementing the `ai::logger::Logger` interface:
-
-```cpp
-#include "ai/logger.h"
-#include <fstream>
-
-class FileLogger : public ai::logger::Logger {
-public:
-    FileLogger(const std::string& filename)
-        : file_(filename, std::ios::app) {}
-    
-    void log(ai::logger::LogLevel level, std::string_view message) override {
-        if (is_enabled(level)) {
-            file_ << "[" << level_to_string(level) << "] " << message << std::endl;
-        }
-    }
-    
-    bool is_enabled(ai::logger::LogLevel level) const override {
-        return level >= min_level_;
-    }
-    
-private:
-    std::ofstream file_;
-    ai::logger::LogLevel min_level_ = ai::logger::LogLevel::kLogLevelInfo;
-    
-    static std::string_view level_to_string(ai::logger::LogLevel level) {
-        switch (level) {
-            case ai::logger::LogLevel::kLogLevelDebug: return "DEBUG";
-            case ai::logger::LogLevel::kLogLevelInfo: return "INFO";
-            case ai::logger::LogLevel::kLogLevelWarn: return "WARN";
-            case ai::logger::LogLevel::kLogLevelError: return "ERROR";
-        }
-        return "UNKNOWN";
-    }
-};
-
-// Install custom logger
-ai::logger::install_logger(std::make_shared<FileLogger>("ai_sdk.log"));
-```
-
-### Development Recommendations
-
-- **Development**: Use `debug` level to see detailed API interactions
-- **Testing**: Use `info` level to track key operations
-- **Production**: Use `warn` or `error` level for performance
-
-### Logging in Tests
-
-When running tests, you might want to enable debug logging:
-
-```bash
-# Run tests with debug logging
-SPDLOG_LEVEL=debug ctest --verbose
-```
-
-Or programmatically in your test fixtures:
-
-```cpp
-class AITestFixture : public ::testing::Test {
-protected:
-    void SetUp() override {
-        // Enable debug logging for tests
-        ai::logger::install_logger(
-            std::make_shared<ai::logger::ConsoleLogger>(ai::logger::LogLevel::kLogLevelDebug)
-        );
-    }
-};
-```
+`result.provider_metadata` keeps the raw provider response for debugging, and
+`result.finish_reason`, `result.usage` and `result.model` carry the protocol
+data unchanged.
 
 ## Dependencies
 
 ### Core Dependencies
 
-Public header dependencies are resolved in this order: an existing target in the
-enclosing project, `find_package()`, then a pinned upstream fetch by CMake.
+The public headers depend on nothing but the standard library; these are
+implementation details of the shipped components:
 
-- **nlohmann-json**: JSON parsing and generation (reused, found, or fetched)
-- **cpp-httplib**: HTTP client library with OpenSSL support (vendored header-only)
-- **openssl**: Cryptographic library (system-provided)
-- **Built-in logging**: ai::logger provides flexible logging capabilities
+- **nlohmann-json**: request/response JSON and schema validation (an existing
+  `nlohmann_json::nlohmann_json` target is reused; otherwise `find_package()`,
+  otherwise a pinned upstream fetch by CMake)
+- **cpp-httplib**: HTTP client for the transport (vendored header-only)
+- **openssl**: TLS for HTTPS endpoints (system-provided)
+
+Neither nlohmann-json nor cpp-httplib appears in a public header, so a
+consumer of the installed package only needs OpenSSL and Threads.
 
 ### Test Dependencies
 

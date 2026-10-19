@@ -1,232 +1,264 @@
 # AI SDK CPP
 
-The AI SDK CPP is a modern C++ toolkit for calling tool-calling capable language models from C++: it turns a request into a validated set of structured tool calls, and hides the differences between OpenAI-compatible endpoints behind one interface.
+A C++20 SDK for **structured tool calling**: one request in, one validated batch
+of tool calls out.
 
-## Motivation
+```
+context + tool definitions
+           |
+           v
+   provider.Complete(request)          one model request, no retries into a
+           |                           conversation, no tool execution
+           v
+   CompletionResult
+     status         Success | NoToolCalls | InvalidToolCalls | Truncated |
+                    Refused | Unsupported | ProviderError
+     tool_calls     ids, names and argument JSON, validated
+           |
+           v
+   the application decides what to execute and what to remember
+```
 
-C++ developers have long lacked a first-class, convenient way to reach the model endpoints used by agentic applications. AI SDK CPP bridges this gap by providing:
+The SDK does not chat, does not run an agent loop and does not execute tools.
+That is deliberate: a game or an application owns its state, its permissions and
+its side effects, and it needs the model's decisions as data, not as prose.
 
-- **Unified API**: Work with multiple AI providers through a single, consistent interface
-- **Modern C++**: Built with C++20 features for clean, expressive code
-- **Minimal Dependencies**: Minimal external dependencies for easy integration
+## What it does and does not do
 
-## Installation
+| Does | Does not |
+| --- | --- |
+| Describe tools with JSON schemas and forward them to the provider | Execute tools or apply their results |
+| Force tool calling (`tool_choice`) and request strict schemas | Maintain or advance a conversation by itself |
+| Return every tool call in order, with ids and raw arguments | Stream tokens or SSE |
+| Validate the batch (known tools, count, JSON, schema) before Success | Retry into a multi-step workflow |
+| Report failures as statuses instead of silent fallbacks | Provide a general chat/text-generation API |
 
-You will need a C++20 compatible compiler and CMake 3.16+ installed on your development machine.
+## Completion statuses
 
-## Usage
+`CompletionStatus` is the only thing a caller has to branch on:
 
-### Core API
+| Status | Meaning | Safe to execute the batch? |
+| --- | --- | --- |
+| `Success` | The batch passed every check | yes |
+| `NoToolCalls` | The model answered with text or nothing | no |
+| `InvalidToolCalls` | Unknown tool, bad count, unparseable or schema-breaking arguments | no |
+| `Truncated` | The token limit cut the completion off | no |
+| `Refused` | The model refused, or a content filter blocked it | no |
+| `Unsupported` | The request needs a guarantee this provider cannot make | no |
+| `ProviderError` | Transport, HTTP, auth, rate limit or parse failure (`error->kind`) | no |
 
-The AI SDK CPP Core module provides a unified API to interact with OpenAI-compatible model providers.
+`result.error` carries a `ModelError` (kind, message, http status, retryable,
+raw body) and `result.provider_metadata` keeps the raw provider response.
 
-#### OpenAI Integration
+## Quick start
 
 ```cpp
-#include <ai/openai.h>
-#include <ai/core.h>
 #include <iostream>
+#include <llm/core.h>
+#include <llm/openai.h>
 
 int main() {
-    // Ensure OPENAI_API_KEY environment variable is set
-    auto client = ai::openai::create_client();
-    
-    ai::GenerateOptions options(ai::openai::models::kGpt56,
-                                "Why is the sky blue?");
-    options.system = "You are a friendly assistant!";
-    auto result = client.generate_text(options);
-    
-    if (result) {
-        std::cout << result->text << std::endl;
-    }
-    
-    return 0;
+  llm::ModelRequest request;
+  request.model = llm::openai::models::kGpt56;
+  request.messages = {
+      llm::Message::System(
+          "You are the head coach. Answer only with tool calls."),
+      llm::Message::User(
+          "Minute 62, 1-1, opponent presses high down our left side."),
+  };
+
+  llm::ToolDefinition pressing;
+  pressing.name = "set_pressing_intensity";
+  pressing.description = "Raise or lower how aggressively the team presses";
+  pressing.parameters_schema_json = R"({
+    "type": "object",
+    "properties": {"level": {"type": "integer", "minimum": 1, "maximum": 5}},
+    "required": ["level"],
+    "additionalProperties": false
+  })";
+  pressing.strict = true;
+
+  request.tools = {
+      pressing,
+      // A decision round that changes nothing must be expressible, otherwise a
+      // forced tool call pushes the model into inventing a change.
+      llm::ToolDefinition{"keep_current_tactics",
+                          "Keep the current setup",
+                          R"({"type":"object","properties":{"reason_code":{"type":"string"}},"required":["reason_code"],"additionalProperties":false})",
+                          true},
+  };
+  request.tool_choice = llm::ToolChoice::Required();
+  request.max_tool_calls = 3;  // application policy
+
+  auto provider = llm::openai::CreateProviderFromEnvironment();  // OPENAI_API_KEY
+  const llm::CompletionResult result = provider->Complete(request);
+
+  if (!result.IsSuccess()) {
+    std::cerr << llm::ToString(result.status) << ": " << result.ErrorMessage()
+              << "\n";
+    return 1;
+  }
+
+  for (const llm::ToolCall& call : result.tool_calls) {
+    // The application dispatches; the SDK never does.
+    std::cout << call.name << " " << call.arguments_json << "\n";
+  }
 }
 ```
 
-#### Multi-turn Conversations
+Runnable versions: [`examples/coach_decision.cpp`](examples/coach_decision.cpp)
+(real API) and [`examples/offline_transport.cpp`](examples/offline_transport.cpp)
+(scripted transport, no key, no network — it also prints the request body the
+SDK would send).
+
+## Feeding a previous decision back
+
+`llm::Message` keeps the tool vocabulary, so a decision round — the assistant's
+tool calls plus their results — can be sent back as context. The SDK builds
+neither the messages nor the loop:
 
 ```cpp
-#include <ai/openai.h>
-#include <ai/core.h>
-#include <iostream>
-
-int main() {
-    auto client = ai::openai::create_client();
-    
-    ai::Messages messages = {
-        ai::Message::system("You are a helpful math tutor."),
-        ai::Message::user("What is 2 + 2?"),
-        ai::Message::assistant("2 + 2 equals 4."),
-        ai::Message::user("Now what is 4 + 4?")
-    };
-    
-    auto result = client.generate_text(
-        ai::GenerateOptions(ai::openai::models::kGpt56, messages));
-    
-    if (result) {
-        std::cout << result->text << std::endl;
-    }
-    
-    return 0;
+llm::ModelRequest next;
+next.messages = previous_messages;
+next.messages.push_back(decision.ToAssistantMessage());  // assistant + tool_calls
+for (const auto& call : decision.tool_calls) {
+  llm::ToolResult applied;
+  applied.tool_call_id = call.id;
+  applied.name = call.name;
+  applied.content_json = R"({"applied":true})";  // your tool output as JSON text
+  next.messages.push_back(llm::Message::ToolResult(applied));
 }
+next.messages.push_back(llm::Message::User("They switched to a low block."));
 ```
 
-#### Tool Calling
+On the wire this becomes the OpenAI messages an OpenAI-compatible server
+expects: an assistant turn with `tool_calls` (arguments as the raw JSON text)
+followed by one `role: "tool"` message per call.
 
-The AI SDK CPP supports function calling, allowing models to interact with external systems and APIs.
+## Validation
+
+`Success` is only ever returned for a batch that passed:
+
+- the batch size window (at least one call; at most `ModelRequest::max_tool_calls`);
+- ids that can be answered with tool results;
+- tool names that the request actually offered;
+- arguments that parse as a JSON object;
+- arguments that satisfy the tool's JSON Schema (type, enum, const, properties,
+  required, additionalProperties, items with min/maxItems, minimum/maximum,
+  minLength/maxLength, anyOf/oneOf/allOf).
+
+An application can add its own policy by injecting a validator:
 
 ```cpp
-#include <ai/openai.h>
-#include <ai/core.h>
-#include <ai/tools.h>
-#include <iostream>
+class OneChangePerRound : public llm::ToolCallValidator {
+ public:
+  llm::ValidationReport Validate(const llm::ModelRequest&,
+                                 const std::vector<llm::ToolCall>& calls) const override;
+};
 
-int main() {
-    auto client = ai::openai::create_client();
-
-    // Describe the tools; the SDK forwards this schema to the provider.
-    ai::ToolSet tools = {
-        {"weather", ai::create_tool_schema(
-            "Get current weather for a location",
-            ai::create_object_schema({{"location", "string"}}))}
-    };
-
-    ai::GenerateOptions options(ai::openai::models::kGpt56,
-                                "What's the weather in San Francisco?");
-    options.tools = tools;
-    options.tool_choice = ai::ToolChoice::required();
-
-    auto result = client.generate_text(options);
-
-    // The SDK reports the batch; executing it is the caller's job.
-    if (result && result.has_tool_calls()) {
-        for (const auto& call : result.tool_calls) {
-            std::cout << "Tool: " << call.tool_name
-                      << ", Args: " << call.arguments.dump() << std::endl;
-        }
-    }
-
-    return 0;
-}
+llm::openai::ProviderOptions options;
+options.api_key = "...";
+options.validator = std::make_shared<const OneChangePerRound>();
 ```
 
-#### Custom Retry Configuration
+## Providers and guarantees
 
-Configure retry behavior for handling transient failures:
+A provider publishes what it can actually guarantee
+(`ProviderCapabilities`: parallel tool calls, forced tool choice, strict
+schemas, tool results in the context). If a request needs a guarantee the
+provider does not have, the SDK answers `Unsupported` **before** sending
+anything, rather than pretending the model was constrained. Callers that accept
+SDK-side validation instead set `allow_validation_downgrade = true`; the
+validation still runs, and the result carries a warning.
 
 ```cpp
-#include <ai/openai.h>
-#include <ai/retry/retry_policy.h>
-
-int main() {
-    // Configure custom retry behavior
-    ai::retry::RetryConfig retry_config;
-    retry_config.max_retries = 5;        // More retries for unreliable networks
-    retry_config.initial_delay = std::chrono::milliseconds(1000);
-    retry_config.backoff_factor = 1.5;   // Gentler backoff
-    
-    // Create client with custom retry configuration
-    auto client = ai::openai::create_client(
-        "your-api-key",
-        "https://api.openai.com",
-        retry_config
-    );
-    
-    // The client will automatically retry on transient failures:
-    // - Network errors
-    // - HTTP 408, 409, 429 (rate limits), and 5xx errors
-    auto result = client.generate_text(
-        ai::GenerateOptions(ai::openai::models::kGpt56, "Hello, world!"));
-    
-    return 0;
-}
+llm::openai::ProviderOptions options;
+options.api_key = "...",
+options.base_url = "https://openrouter.ai/api";  // any OpenAI-compatible endpoint
+options.capabilities.strict_tool_schema = false; // what this endpoint honours
+options.retry.max_attempts = 5;
+options.timeout_seconds = 30;
+options.extra_headers.push_back({"X-Title", "my game"});
 ```
 
-#### Using OpenAI-Compatible APIs (OpenRouter, etc.)
+Retrying covers 408/409/429/5xx responses and transport failures, with
+configurable attempts, backoff and maximum delay.
 
-The OpenAI client can be used with any OpenAI-compatible API by specifying a custom base URL. This allows you to use alternative providers like OpenRouter, which offers access to multiple models through a unified API.
+## Offline and in tests
+
+`llm::ITransport` is the only thing a provider needs from the outside world, so
+the whole SDK runs without a network:
 
 ```cpp
-#include <ai/openai.h>
-#include <ai/core.h>
-#include <iostream>
-#include <cstdlib>
+class ScriptedTransport : public llm::ITransport {
+ public:
+  llm::HttpResponse Send(const llm::HttpRequest&) override;
+};
 
-int main() {
-    // Get API key from environment variable
-    const char* api_key = std::getenv("OPENROUTER_API_KEY");
-    if (!api_key) {
-        std::cerr << "Please set OPENROUTER_API_KEY environment variable\n";
-        return 1;
-    }
-    
-    // Create client with OpenRouter's base URL
-    auto client = ai::openai::create_client(
-        api_key,
-        "https://openrouter.ai/api"  // OpenRouter's OpenAI-compatible endpoint
-    );
-    
-    // Use any model available on OpenRouter
-    ai::GenerateOptions options("anthropic/claude-sonnet-5",
-                                "What are the benefits of using OpenRouter?");
-    options.system = "You are a helpful assistant.";
-    auto result = client.generate_text(options);
-    
-    if (result) {
-        std::cout << result->text << std::endl;
-    }
-    
-    return 0;
-}
+llm::openai::ProviderOptions options;
+options.api_key = "scripted";
+options.transport = std::make_shared<ScriptedTransport>();
+auto provider = llm::openai::CreateProvider(std::move(options));
 ```
 
-This approach works with any OpenAI-compatible API provider. Simply provide:
-1. Your provider's API key
-2. The provider's base URL endpoint
-3. Model names as specified by your provider
+The SDK's own tests use exactly this seam, which is why they need no API key.
 
-See the [OpenRouter example](examples/openrouter_example.cpp) for a complete demonstration.
+## Building
 
-## Features
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+cmake --build build --parallel
+cmake --install build --prefix /usr/local
+```
 
-### Currently Supported
+`BUILD_EXAMPLES` (default `ON`) and `BUILD_TESTS` (default `OFF`) control the
+optional targets. `scripts/build.py` wraps the same flow for development:
 
-- ✅ **Text Generation**: Non-streaming completions against OpenAI and OpenAI-compatible APIs
-- ✅ **Multi-turn Conversations**: Support for conversation history
-- ✅ **Tool Calling**: Function calling with schema-carrying tool definitions
-- ✅ **Configurable Retries**: Customizable retry behavior with exponential backoff
-- ✅ **Error Handling**: Comprehensive error handling with optional types
+```bash
+uv run scripts/build.py --mode release --tests --export-compile-commands
+```
 
-### Coming Soon
+## Using it from another project
 
-- 🚧 **Local Models**: A llama.cpp provider emitting the same tool-call protocol
+```cmake
+find_package(ai-sdk-cpp CONFIG REQUIRED COMPONENTS core openai)
+target_link_libraries(my_target PRIVATE llm::openai)
+```
 
-## Examples
-
-Check out our [examples directory](examples/) for more comprehensive usage examples:
-
-- [Basic Chat Application](examples/basic_chat.cpp)
-- [Multi-provider Comparison](examples/multi_provider.cpp)
-- [Error Handling](examples/error_handling.cpp)
-- [Retry Configuration](examples/retry_config_example.cpp)
-- [Basic Tool Calling](examples/tool_calling_basic.cpp)
-- [OpenRouter Integration](examples/openrouter_example.cpp) - Using OpenAI-compatible APIs
-
-## Requirements
-
-- **C++ Standard**: C++20 or higher
-- **CMake**: 3.16 or higher
+Components: `core` (standard-library-only protocol types), `validation`,
+`http` (transport implementation), `openai`, and `sdk` (everything).
+`target_link_libraries(... llm::sdk)` is the shortcut for all of them.
 
 ## Dependencies
 
-The linked dependency set is deliberately small:
+The public headers are standard-library-only; these are implementation details:
 
-- **cpp-httplib**: vendored header-only HTTP client, used together with OpenSSL
-- **nlohmann/json**: an existing `nlohmann_json::nlohmann_json` target is reused when the enclosing project provides one; otherwise `find_package()` is tried, and otherwise CMake fetches the official v3.12.0 release with a pinned SHA256
-- **OpenSSL**: TLS for HTTPS endpoints
-- **GoogleTest**: tests only, fetched by CMake
+- **cpp-httplib** — vendored header-only HTTP client (with OpenSSL for TLS);
+- **nlohmann/json** — request/response JSON and schema validation; an existing
+  `nlohmann_json::nlohmann_json` target is reused when the enclosing project
+  provides one, otherwise `find_package()` is tried, otherwise CMake fetches the
+  official release with a pinned SHA256;
+- **OpenSSL** — required by the HTTP transport;
+- **GoogleTest** — tests only, fetched by CMake.
+
+A consumer of the installed package needs OpenSSL and Threads only.
+
+## Requirements
+
+- C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
+- CMake 3.16+
+
+## Examples
+
+- [Coach decision](examples/coach_decision.cpp) — the intended flow: context,
+  tools, one completion, a validated batch, caller-side dispatch.
+- [Offline transport](examples/offline_transport.cpp) — the same flow with a
+  scripted transport, including what an invalid batch looks like.
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the build scripts, testing and
+linting.
 
 ## Acknowledgments
 
-Inspired by the excellent [Vercel AI SDK](https://github.com/vercel/ai) for TypeScript/JavaScript developers.
+Inspired by the excellent [Vercel AI SDK](https://github.com/vercel/ai) for
+TypeScript/JavaScript developers.

@@ -794,6 +794,70 @@ TEST(LlmOpenAIProviderTest, DowngradeStillValidates) {
   EXPECT_FALSE(result.warnings.empty());
 }
 
+// ---------------------------------------------------------------------------
+// Whole protocol round trip (PROTO-5)
+// ---------------------------------------------------------------------------
+TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
+  Fixture fixture;
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+  fixture.transport->responses.push_back(
+      FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+
+  // 1. The first decision comes back from the provider.
+  const CompletionResult decision =
+      fixture.Complete(MakeRequest(), fixture.Options());
+  ASSERT_TRUE(decision.IsSuccess()) << decision.ErrorMessage();
+  ASSERT_EQ(decision.tool_calls.size(), 2u);
+
+  // 2. The caller applies it and assembles the next context: the assistant turn
+  //    with those tool calls, one tool turn per applied call, then new state.
+  ModelRequest second = MakeRequest();
+  second.messages.push_back(decision.ToAssistantMessage());
+  for (const ToolCall& call : decision.tool_calls) {
+    ToolResult applied;
+    applied.tool_call_id = call.id;
+    applied.name = call.name;
+    applied.content_json = R"({"applied":true})";
+    second.messages.push_back(Message::ToolResult(applied));
+  }
+  second.messages.push_back(Message::User("Opponent switched to a low block."));
+
+  // 3. The second request must serialize that history as OpenAI messages.
+  const CompletionResult second_decision =
+      fixture.Complete(second, fixture.Options());
+  ASSERT_TRUE(second_decision.IsSuccess()) << second_decision.ErrorMessage();
+  ASSERT_EQ(fixture.transport->requests.size(), 2u);
+
+  const nlohmann::json body = nlohmann::json::parse(
+      fixture.transport->requests[1].body, nullptr, false);
+  ASSERT_FALSE(body.is_discarded());
+
+  // system, user, assistant(tool calls), tool, tool, user
+  const auto& messages = body["messages"];
+  ASSERT_EQ(messages.size(), 6u);
+
+  const auto& assistant = messages[2];
+  EXPECT_EQ(assistant["role"], "assistant");
+  EXPECT_TRUE(assistant["content"].is_null());
+  ASSERT_EQ(assistant["tool_calls"].size(), 2u);
+  EXPECT_EQ(assistant["tool_calls"][0]["id"], decision.tool_calls[0].id);
+  EXPECT_EQ(assistant["tool_calls"][0]["function"]["name"],
+            decision.tool_calls[0].name);
+  // The argument text survives the round trip byte for byte.
+  EXPECT_EQ(
+      assistant["tool_calls"][0]["function"]["arguments"].get<std::string>(),
+      decision.tool_calls[0].arguments_json);
+  EXPECT_EQ(assistant["tool_calls"][1]["id"], decision.tool_calls[1].id);
+
+  EXPECT_EQ(messages[3]["role"], "tool");
+  EXPECT_EQ(messages[3]["tool_call_id"], decision.tool_calls[0].id);
+  EXPECT_EQ(messages[3]["content"], R"({"applied":true})");
+  EXPECT_EQ(messages[4]["tool_call_id"], decision.tool_calls[1].id);
+  EXPECT_EQ(messages[5]["role"], "user");
+  EXPECT_EQ(messages[5]["content"], "Opponent switched to a low block.");
+}
+
 }  // namespace
 }  // namespace openai
 }  // namespace llm
