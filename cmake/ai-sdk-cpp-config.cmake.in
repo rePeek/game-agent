@@ -16,7 +16,7 @@ set(AI_SDK_VERSION "@PROJECT_VERSION@")
 include("${CMAKE_CURRENT_LIST_DIR}/ai-sdk-cpp-targets.cmake")
 
 # Available components
-set(AI_SDK_AVAILABLE_COMPONENTS core validation http openai sdk)
+set(AI_SDK_AVAILABLE_COMPONENTS core validation context http openai sdk)
 
 # Check requested components
 set(AI_SDK_REQUESTED_COMPONENTS ${ai-sdk-cpp_FIND_COMPONENTS})

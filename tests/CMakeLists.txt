@@ -1,6 +1,7 @@
 # Test executable for AI SDK C++
 add_executable(ai_tests
     unit/llm_core_test.cpp
+    unit/llm_context_test.cpp
     unit/llm_openai_test.cpp
     unit/llm_validation_test.cpp
 )
@@ -14,6 +15,7 @@ target_link_libraries(ai_tests
         llm::core
         llm::openai
         llm::validation
+        llm::context
         nlohmann_json::nlohmann_json
         httplib::httplib
         GTest::gtest

@@ -74,6 +74,27 @@ target_link_libraries(llm-validation
 )
 
 # ---------------------------------------------------------------------------
+# llm::context — message history for one decision stream.
+#
+# Depends on llm::core only: a Session wraps a provider through the
+# IModelProvider interface, so it never links a concrete provider.
+# ---------------------------------------------------------------------------
+add_library(llm-context)
+add_library(llm::context ALIAS llm-context)
+set_target_properties(llm-context PROPERTIES EXPORT_NAME context)
+configure_llm_component(llm-context)
+
+target_sources(llm-context
+    PRIVATE
+        src/llm/context/context.cpp
+)
+
+target_link_libraries(llm-context
+    PUBLIC
+        llm::core
+)
+
+# ---------------------------------------------------------------------------
 # llm::http — HTTP/HTTPS transport implementation (cpp-httplib + OpenSSL).
 # ---------------------------------------------------------------------------
 add_library(llm-http)
@@ -140,6 +161,7 @@ target_link_libraries(llm-sdk
     INTERFACE
         llm::core
         llm::validation
+        llm::context
         llm::http
         llm::openai
 )
@@ -148,6 +170,7 @@ target_link_libraries(llm-sdk
 set(LLM_CONCRETE_TARGETS
     llm-core
     llm-validation
+    llm-context
     llm-http
     llm-openai
 )

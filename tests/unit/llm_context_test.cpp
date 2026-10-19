@@ -1,0 +1,289 @@
+// Unit tests for the context/message-history layer.
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include <llm/context.h>
+#include <llm/core.h>
+
+namespace llm {
+namespace {
+
+ContextUpdate Update(std::string context,
+                     std::string history = {},
+                     std::string revision = "rev-1") {
+  ContextUpdate update;
+  update.current_context = std::move(context);
+  update.recent_history = std::move(history);
+  update.context_revision = std::move(revision);
+  return update;
+}
+
+ContextUpdate EmptyUpdate() {
+  ContextUpdate update;
+  update.current_context = "Minute 62.";
+  update.context_revision = "rev-1";
+  return update;
+}
+
+struct DecisionSpec {
+  std::uint64_t id = 1;
+  std::string tool_name = "set_pressing_intensity";
+  std::string arguments = R"({"level":3})";
+  std::string assistant_text;
+};
+
+DecisionRecord MakeDecision(const DecisionSpec& spec) {
+  ToolCall call{"call_" + std::to_string(spec.id), spec.tool_name,
+                spec.arguments};
+  DecisionRecord record;
+  record.decision_id = spec.id;
+  record.context_revision = "rev-" + std::to_string(spec.id);
+  record.assistant = Message::AssistantToolCalls({call});
+  if (!spec.assistant_text.empty()) {
+    record.assistant.content = spec.assistant_text;
+  }
+  ToolResult applied;
+  applied.tool_call_id = call.id;
+  applied.name = call.name;
+  applied.content_json = R"({"applied":true})";
+  record.tool_results = {Message::ToolResult(applied)};
+  return record;
+}
+
+std::vector<std::string> ContentsOf(const std::vector<Message>& messages) {
+  std::vector<std::string> contents;
+  for (const Message& message : messages) {
+    contents.push_back(message.content);
+  }
+  return contents;
+}
+
+TEST(LlmContextTest, CurrentContextReplacesTheSnapshot) {
+  Context context;
+  context.SetSystemPrompt("You are a coach.");
+
+  context.SetContextUpdate(
+      Update("Minute 10, 0-0.", "no pressure yet", "rev-1"));
+  ASSERT_EQ(context.context_revision(), "rev-1");
+
+  context.SetContextUpdate(
+      Update("Minute 62, 1-1.", "they press high", "rev-2"));
+
+  EXPECT_EQ(context.current_context(), "Minute 62, 1-1.");
+  EXPECT_EQ(context.recent_history(), "they press high");
+  EXPECT_EQ(context.context_revision(), "rev-2");
+
+  const RenderedContext rendered = context.Render();
+  ASSERT_EQ(rendered.messages.size(), 3u);
+  EXPECT_EQ(rendered.messages[0].role, Role::System);
+  // The old snapshot is gone, not accumulated.
+  for (const std::string& content : ContentsOf(rendered.messages)) {
+    EXPECT_EQ(content.find("Minute 10"), std::string::npos) << content;
+  }
+  EXPECT_NE(rendered.messages[1].content.find("they press high"),
+            std::string::npos);
+  EXPECT_NE(rendered.messages[2].content.find("Minute 62"), std::string::npos);
+}
+
+TEST(LlmContextTest, EmptyBlocksAreSkipped) {
+  Context context;
+  context.SetContextUpdate(Update("Minute 1."));
+
+  const RenderedContext rendered = context.Render();
+
+  ASSERT_EQ(rendered.messages.size(), 1u);
+  EXPECT_EQ(rendered.messages[0].role, Role::User);
+  EXPECT_NE(rendered.messages[0].content.find("Minute 1."), std::string::npos);
+
+  context.SetSystemPrompt("You are a coach.");
+  context.SetContextUpdate(Update("Minute 2.", "some history"));
+  const RenderedContext with_system = context.Render();
+  ASSERT_EQ(with_system.messages.size(), 3u);
+  EXPECT_EQ(with_system.messages[0].role, Role::System);
+}
+
+TEST(LlmContextTest, DecisionsKeepToolCallsAndResultsTogether) {
+  Context context;
+  context.SetContextUpdate(EmptyUpdate());
+  context.AppendDecision(MakeDecision(DecisionSpec{1}));
+  context.AppendDecision(MakeDecision(
+      DecisionSpec{2, "set_defensive_line", R"({"height":"low"})"}));
+
+  const RenderedContext rendered = context.Render();
+
+  // system prompt is empty here, so: decision 1 (assistant + tool),
+  // decision 2 (assistant + tool), current context.
+  ASSERT_EQ(rendered.messages.size(), 5u);
+  EXPECT_EQ(rendered.decisions_included, 2u);
+  EXPECT_EQ(rendered.decisions_dropped, 0u);
+
+  EXPECT_EQ(rendered.messages[0].role, Role::Assistant);
+  ASSERT_EQ(rendered.messages[0].tool_calls.size(), 1u);
+  EXPECT_EQ(rendered.messages[0].tool_calls[0].name, "set_pressing_intensity");
+  EXPECT_EQ(rendered.messages[1].role, Role::Tool);
+  EXPECT_EQ(rendered.messages[1].tool_call_id, "call_1");
+
+  EXPECT_EQ(rendered.messages[2].role, Role::Assistant);
+  EXPECT_EQ(rendered.messages[2].tool_calls[0].name, "set_defensive_line");
+  EXPECT_EQ(rendered.messages[3].role, Role::Tool);
+  EXPECT_EQ(rendered.messages[3].tool_call_id, "call_2");
+
+  EXPECT_EQ(rendered.messages[4].role, Role::User);
+  EXPECT_NE(rendered.messages[4].content.find("Current context"),
+            std::string::npos);
+}
+
+TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
+  ToolCall first{"call_a", "set_pressing_intensity", R"({"level":4})"};
+  ToolCall second{"call_b", "set_defensive_line", R"({"height":"high"})"};
+
+  DecisionRecord record;
+  record.decision_id = 7;
+  record.context_revision = "rev-7";
+  record.assistant = Message::AssistantToolCalls({first, second});
+  for (const ToolCall& call : {first, second}) {
+    ToolResult result;
+    result.tool_call_id = call.id;
+    result.name = call.name;
+    result.content_json = R"({"applied":true})";
+    record.tool_results.push_back(Message::ToolResult(result));
+  }
+  ASSERT_EQ(record.MessageCount(), 3u);
+
+  Context context;
+  context.SetContextUpdate(EmptyUpdate());
+  context.AppendDecision(std::move(record));
+
+  const RenderedContext rendered = context.Render();
+  // assistant (2 tool calls) + 2 tool turns + the current context
+  ASSERT_EQ(rendered.messages.size(), 4u);
+  EXPECT_EQ(rendered.messages[0].role, Role::Assistant);
+  EXPECT_EQ(rendered.messages[0].tool_calls.size(), 2u);
+  EXPECT_EQ(rendered.messages[1].role, Role::Tool);
+  EXPECT_EQ(rendered.messages[1].tool_call_id, "call_a");
+  EXPECT_EQ(rendered.messages[2].role, Role::Tool);
+  EXPECT_EQ(rendered.messages[2].tool_call_id, "call_b");
+  EXPECT_EQ(rendered.messages[3].role, Role::User);
+}
+
+TEST(LlmContextTest, BudgetDropsWholeDecisionsOldestFirst) {
+  ContextConfig config;
+  // system + context use 2 of the 6, leaving room for two 2-message records.
+  config.max_messages = 6;
+  Context context(config);
+  context.SetSystemPrompt("You are a coach.");
+  context.SetContextUpdate(EmptyUpdate());
+  for (std::uint64_t id = 1; id <= 5; ++id) {
+    context.AppendDecision(MakeDecision(DecisionSpec{id}));
+  }
+
+  const RenderedContext rendered = context.Render();
+
+  EXPECT_EQ(rendered.decisions_included, 2u);
+  EXPECT_EQ(rendered.decisions_dropped, 3u);
+  ASSERT_EQ(rendered.messages.size(), 6u);  // 1 + 2*2 + 1
+  EXPECT_EQ(rendered.messages[0].role, Role::System);
+  // The two newest survive, the older three are gone as complete units.
+  EXPECT_EQ(rendered.messages[1].tool_calls[0].id, "call_4");
+  EXPECT_EQ(rendered.messages[3].tool_calls[0].id, "call_5");
+
+  // The stored history is untouched: trimming is a rendering decision.
+  EXPECT_EQ(context.decision_count(), 5u);
+}
+
+TEST(LlmContextTest, MaxDecisionsCapsWhatIsKept) {
+  ContextConfig config;
+  config.max_messages = 1000;
+  config.max_decisions = 2;
+  Context context(config);
+  context.SetContextUpdate(EmptyUpdate());
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    context.AppendDecision(MakeDecision(DecisionSpec{id}));
+  }
+
+  const RenderedContext rendered = context.Render();
+
+  EXPECT_EQ(rendered.decisions_included, 2u);
+  EXPECT_EQ(rendered.decisions_dropped, 2u);
+  ASSERT_EQ(rendered.messages.size(), 5u);
+  EXPECT_EQ(rendered.messages[0].tool_calls[0].id, "call_3");
+  EXPECT_EQ(rendered.messages[2].tool_calls[0].id, "call_4");
+}
+
+TEST(LlmContextTest, EssentialBlocksAreSentEvenWithoutBudget) {
+  ContextConfig config;
+  config.max_messages = 2;  // impossible: system + context already need 2
+  Context context(config);
+  context.SetSystemPrompt("You are a coach.");
+  context.SetContextUpdate(Update("Minute 90.", "tense"));
+  context.AppendDecision(MakeDecision(DecisionSpec{1}));
+
+  const RenderedContext rendered = context.Render();
+
+  EXPECT_EQ(rendered.decisions_included, 0u);
+  EXPECT_EQ(rendered.decisions_dropped, 1u);
+  ASSERT_EQ(rendered.messages.size(), 3u);
+  EXPECT_EQ(rendered.messages[0].role, Role::System);
+  EXPECT_NE(rendered.messages[1].content.find("Recent history"),
+            std::string::npos);
+  EXPECT_NE(rendered.messages[2].content.find("Current context"),
+            std::string::npos);
+}
+
+TEST(LlmContextTest, BuildRequestCarriesToolsAndForcesToolCalling) {
+  Context context;
+  context.SetSystemPrompt("You are a coach.");
+  context.SetContextUpdate(EmptyUpdate());
+
+  llm::ToolDefinition tool;
+  tool.name = "set_pressing_intensity";
+  tool.description = "Pressing intensity";
+  tool.parameters_schema_json = R"({"type":"object"})";
+  tool.strict = true;
+  context.SetTools({tool});
+
+  const ModelRequest request = context.BuildRequest("gpt-5.6");
+
+  EXPECT_EQ(request.model, "gpt-5.6");
+  ASSERT_EQ(request.tools.size(), 1u);
+  EXPECT_EQ(request.tools[0].name, "set_pressing_intensity");
+  EXPECT_TRUE(request.tools[0].strict);
+  EXPECT_EQ(request.tool_choice.mode, ToolChoiceMode::Required);
+  ASSERT_EQ(request.messages.size(), 2u);
+  EXPECT_EQ(request.messages[0].role, Role::System);
+
+  // The context is reusable: rendering twice gives the same transcript.
+  EXPECT_EQ(context.BuildRequest("gpt-5.6").messages.size(),
+            request.messages.size());
+}
+
+TEST(LlmContextTest, ClearDecisionsResetsTheHistory) {
+  Context context;
+  context.SetContextUpdate(EmptyUpdate());
+  context.AppendDecision(MakeDecision(DecisionSpec{1}));
+  ASSERT_EQ(context.decision_count(), 1u);
+
+  context.ClearDecisions();
+
+  EXPECT_EQ(context.decision_count(), 0u);
+  EXPECT_EQ(context.Render().decisions_included, 0u);
+}
+
+TEST(LlmContextTest, RevisionsTrackTheNewestUpdateOnly) {
+  Context context;
+  context.SetContextUpdate(Update("Minute 10.", {}, "rev-10"));
+  context.AppendDecision(MakeDecision(DecisionSpec{1}));
+
+  // A decision recorded under an older revision does not change what the
+  // session considers current.
+  context.SetContextUpdate(Update("Minute 70.", {}, "rev-70"));
+
+  EXPECT_EQ(context.context_revision(), "rev-70");
+  EXPECT_EQ(context.decisions()[0].context_revision, "rev-1");
+}
+
+}  // namespace
+}  // namespace llm
