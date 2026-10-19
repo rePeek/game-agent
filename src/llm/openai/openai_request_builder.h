@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llm/openai.h"
 #include "llm/request.h"
 
 #include <string>
@@ -23,11 +24,12 @@ struct BuildOutcome {
 ///    never re-serialized from a parsed object;
 ///  * `tool_choice` is forwarded as configured and the provider never adds a
 ///    `parallel_tool_calls: false` cap;
-///  * temperature/top_p are omitted for the gpt-5 family, which rejects
-///    sampling controls on Chat Completions;
-///  * `max_tokens` is used rather than `max_completion_tokens` for
-///    compatibility with OpenAI-compatible servers.
-BuildOutcome BuildChatCompletionRequest(const ModelRequest& request);
+///  * the token limit field and the sampling controls follow the endpoint's
+///    ParameterDialect: reasoning-first families take `max_completion_tokens`
+///    and reject temperature/top_p/seed on Chat Completions.
+BuildOutcome BuildChatCompletionRequest(
+    const ModelRequest& request,
+    ParameterDialect dialect = ParameterDialect::Auto);
 
 /// Wire spelling of a role ("system"/"user"/"assistant"/"tool").
 const char* WireRole(Role role);

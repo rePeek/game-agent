@@ -12,6 +12,26 @@ namespace {
 
 using Json = nlohmann::json;
 
+/// Nesting deeper than this is reported instead of validated, so a pathological
+/// schema cannot make the validator recurse without bound.
+constexpr std::size_t kMaxSchemaDepth = 32;
+
+enum class ProblemKind {
+  Arguments,
+  Schema,
+};
+
+struct Problem {
+  ProblemKind kind;
+  std::string message;
+};
+
+using Problems = std::vector<Problem>;
+
+void AddProblem(Problems& problems, ProblemKind kind, std::string message) {
+  problems.push_back(Problem{kind, std::move(message)});
+}
+
 std::string DescribeType(const Json& value) {
   if (value.is_null()) {
     return "null";
@@ -37,70 +57,246 @@ std::string DescribeType(const Json& value) {
   return "unknown";
 }
 
-bool MatchesSimpleType(const std::string& type, const Json& value) {
+enum class TypeMatch {
+  Match,
+  Mismatch,
+  Unsupported,  // the schema names a type this validator does not know
+};
+
+TypeMatch MatchesSimpleType(const std::string& type, const Json& value) {
   if (type == "string") {
-    return value.is_string();
+    return value.is_string() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "integer") {
-    return value.is_number_integer();
+    return value.is_number_integer() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "number") {
-    return value.is_number();
+    return value.is_number() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "boolean") {
-    return value.is_boolean();
+    return value.is_boolean() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "object") {
-    return value.is_object();
+    return value.is_object() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "array") {
-    return value.is_array();
+    return value.is_array() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
   if (type == "null") {
-    return value.is_null();
+    return value.is_null() ? TypeMatch::Match : TypeMatch::Mismatch;
   }
-  return true;  // unknown type name: do not invent a failure
+  return TypeMatch::Unsupported;
 }
 
-bool MatchesType(const Json& schema, const Json& value) {
+TypeMatch MatchesType(const Json& schema, const Json& value) {
   if (!schema.contains("type")) {
-    return true;
+    return TypeMatch::Match;
   }
   const auto& type = schema["type"];
   if (type.is_string()) {
     return MatchesSimpleType(type.get<std::string>(), value);
   }
   if (type.is_array()) {
+    bool saw_unsupported = false;
     for (const auto& alternative : type) {
-      if (alternative.is_string() &&
-          MatchesSimpleType(alternative.get<std::string>(), value)) {
-        return true;
+      if (!alternative.is_string()) {
+        saw_unsupported = true;
+        continue;
+      }
+      const TypeMatch match =
+          MatchesSimpleType(alternative.get<std::string>(), value);
+      if (match == TypeMatch::Match) {
+        return TypeMatch::Match;
+      }
+      if (match == TypeMatch::Unsupported) {
+        saw_unsupported = true;
       }
     }
-    return false;
+    return saw_unsupported ? TypeMatch::Unsupported : TypeMatch::Mismatch;
   }
-  return true;
+  return TypeMatch::Unsupported;
 }
 
-/// Validates `value` against `schema`, appending human-readable problems to
-/// `errors`. Recursion is bounded by the data, not by the schema.
-void ValidateAgainstSchema(const Json& schema,
-                           const Json& value,
-                           const std::string& path,
-                           std::vector<std::string>& errors,
-                           std::size_t depth) {
-  if (!schema.is_object() || depth > 16) {
+/// Keywords this validator implements (constraints) or may safely ignore
+/// (annotations). Anything else is refused: Success must mean "checked", so a
+/// constraint nobody evaluates may not slip through.
+bool IsKnownKeyword(const std::string& keyword) {
+  static const char* const kKnown[] = {
+      // constraints
+      "type",
+      "enum",
+      "const",
+      "anyOf",
+      "oneOf",
+      "allOf",
+      "properties",
+      "required",
+      "additionalProperties",
+      "items",
+      "minItems",
+      "maxItems",
+      "minimum",
+      "maximum",
+      "minLength",
+      "maxLength",
+      // annotations (no effect on validation)
+      "title",
+      "description",
+      "default",
+      "examples",
+      "$schema",
+      "$id",
+      "$comment",
+      "deprecated",
+      "readOnly",
+      "writeOnly",
+  };
+  for (const char* known : kKnown) {
+    if (keyword == known) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Walks a schema once and reports every keyword that will not be enforced.
+void CheckSchemaSupported(const Json& schema,
+                          const std::string& path,
+                          Problems& problems,
+                          std::size_t depth) {
+  if (!schema.is_object()) {
+    if (!path.empty()) {
+      AddProblem(problems, ProblemKind::Schema,
+                 path + " is not a JSON Schema object");
+    }
+    return;
+  }
+  if (depth > kMaxSchemaDepth) {
+    AddProblem(problems, ProblemKind::Schema,
+               "schema is nested deeper than " +
+                   std::to_string(kMaxSchemaDepth) + " levels");
     return;
   }
 
-  if (!MatchesType(schema, value)) {
-    std::string expected = "the declared type";
-    if (schema["type"].is_string()) {
-      expected = "'" + schema["type"].get<std::string>() + "'";
+  for (auto it = schema.begin(); it != schema.end(); ++it) {
+    const std::string keyword = path + "." + it.key();
+    if (!IsKnownKeyword(it.key())) {
+      AddProblem(
+          problems, ProblemKind::Schema,
+          "schema uses '" + it.key() + "' which this validator cannot enforce");
+      continue;  // do not descend into a constraint we do not understand
     }
-    errors.push_back(path + " must be " + expected + " but is '" +
+
+    if (it.key() == "type") {
+      const auto& type = it.value();
+      const auto check_name = [&problems, &keyword](const Json& name) {
+        if (!name.is_string()) {
+          AddProblem(problems, ProblemKind::Schema,
+                     keyword + " must be a string or an array of strings");
+          return;
+        }
+        const std::string text = name.get<std::string>();
+        if (text != "string" && text != "integer" && text != "number" &&
+            text != "boolean" && text != "object" && text != "array" &&
+            text != "null") {
+          AddProblem(problems, ProblemKind::Schema,
+                     "type '" + text + "' is not supported");
+        }
+      };
+      if (type.is_array()) {
+        for (const auto& name : type) {
+          check_name(name);
+        }
+      } else {
+        check_name(type);
+      }
+      continue;
+    }
+
+    if (it.key() == "properties") {
+      if (!it.value().is_object()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be an object");
+        continue;
+      }
+      for (auto property = it.value().begin(); property != it.value().end();
+           ++property) {
+        CheckSchemaSupported(property.value(), keyword + "." + property.key(),
+                             problems, depth + 1);
+      }
+      continue;
+    }
+
+    if (it.key() == "additionalProperties") {
+      if (it.value().is_object()) {
+        CheckSchemaSupported(it.value(), keyword, problems, depth + 1);
+      } else if (!it.value().is_boolean()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be a boolean or an object");
+      }
+      continue;
+    }
+
+    if (it.key() == "items") {
+      if (it.value().is_object()) {
+        CheckSchemaSupported(it.value(), keyword, problems, depth + 1);
+      } else {
+        AddProblem(
+            problems, ProblemKind::Schema,
+            keyword + " must be an object (tuple items are not supported)");
+      }
+      continue;
+    }
+
+    if (it.key() == "anyOf" || it.key() == "oneOf" || it.key() == "allOf") {
+      if (!it.value().is_array() || it.value().empty()) {
+        AddProblem(problems, ProblemKind::Schema,
+                   keyword + " must be a non-empty array");
+        continue;
+      }
+      for (std::size_t i = 0; i < it.value().size(); ++i) {
+        CheckSchemaSupported(it.value()[i],
+                             keyword + "[" + std::to_string(i) + "]", problems,
+                             depth + 1);
+      }
+      continue;
+    }
+  }
+}
+
+/// Validates `value` against `schema`, appending problems.
+void ValidateAgainstSchema(const Json& schema,
+                           const Json& value,
+                           const std::string& path,
+                           Problems& problems,
+                           std::size_t depth) {
+  if (!schema.is_object()) {
+    return;
+  }
+  if (depth > kMaxSchemaDepth) {
+    AddProblem(problems, ProblemKind::Schema,
+               "schema is nested deeper than " +
+                   std::to_string(kMaxSchemaDepth) + " levels");
+    return;
+  }
+
+  switch (MatchesType(schema, value)) {
+    case TypeMatch::Unsupported:
+      AddProblem(problems, ProblemKind::Schema,
+                 path + " is checked against an unsupported 'type'");
+      return;
+    case TypeMatch::Mismatch: {
+      std::string expected = "the declared type";
+      if (schema["type"].is_string()) {
+        expected = "'" + schema["type"].get<std::string>() + "'";
+      }
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " must be " + expected + " but is '" +
                      DescribeType(value) + "'");
-    return;  // further checks would only produce noise
+      return;  // further checks would only produce noise
+    }
+    case TypeMatch::Match:
+      break;
   }
 
   if (schema.contains("enum") && schema["enum"].is_array()) {
@@ -112,13 +308,15 @@ void ValidateAgainstSchema(const Json& schema,
       }
     }
     if (!found) {
-      errors.push_back(path + " is not one of the allowed values (" +
-                       schema["enum"].dump() + ")");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " is not one of the allowed values (" +
+                     schema["enum"].dump() + ")");
     }
   }
 
   if (schema.contains("const") && schema["const"] != value) {
-    errors.push_back(path + " must be " + schema["const"].dump());
+    AddProblem(problems, ProblemKind::Arguments,
+               path + " must be " + schema["const"].dump());
   }
 
   for (const char* keyword : {"anyOf", "oneOf"}) {
@@ -127,10 +325,8 @@ void ValidateAgainstSchema(const Json& schema,
     }
     std::size_t matches = 0;
     for (const auto& alternative : schema[keyword]) {
-      std::vector<std::string> ignored;
-      const std::size_t before_errors = ignored.size();
+      Problems ignored;
       ValidateAgainstSchema(alternative, value, path, ignored, depth + 1);
-      (void)before_errors;
       if (ignored.empty()) {
         ++matches;
       }
@@ -138,13 +334,14 @@ void ValidateAgainstSchema(const Json& schema,
     const bool satisfied =
         std::string(keyword) == "anyOf" ? matches >= 1 : matches == 1;
     if (!satisfied) {
-      errors.push_back(path + " matches no allowed shape (" + keyword + ")");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " matches no allowed shape (" + keyword + ")");
     }
   }
 
   if (schema.contains("allOf") && schema["allOf"].is_array()) {
     for (const auto& alternative : schema["allOf"]) {
-      ValidateAgainstSchema(alternative, value, path, errors, depth + 1);
+      ValidateAgainstSchema(alternative, value, path, problems, depth + 1);
     }
   }
 
@@ -162,8 +359,8 @@ void ValidateAgainstSchema(const Json& schema,
         }
         const std::string name = required.get<std::string>();
         if (!value.contains(name)) {
-          errors.push_back(path + " is missing required property '" + name +
-                           "'");
+          AddProblem(problems, ProblemKind::Arguments,
+                     path + " is missing required property '" + name + "'");
         }
       }
     }
@@ -171,17 +368,17 @@ void ValidateAgainstSchema(const Json& schema,
     for (auto it = value.begin(); it != value.end(); ++it) {
       const std::string child = path + "." + it.key();
       if (properties.contains(it.key())) {
-        ValidateAgainstSchema(properties[it.key()], it.value(), child, errors,
+        ValidateAgainstSchema(properties[it.key()], it.value(), child, problems,
                               depth + 1);
         continue;
       }
       if (schema.contains("additionalProperties")) {
         const auto& additional = schema["additionalProperties"];
         if (additional.is_boolean() && !additional.get<bool>()) {
-          errors.push_back(path + " has unexpected property '" + it.key() +
-                           "'");
+          AddProblem(problems, ProblemKind::Arguments,
+                     path + " has unexpected property '" + it.key() + "'");
         } else if (additional.is_object()) {
-          ValidateAgainstSchema(additional, it.value(), child, errors,
+          ValidateAgainstSchema(additional, it.value(), child, problems,
                                 depth + 1);
         }
       }
@@ -192,21 +389,23 @@ void ValidateAgainstSchema(const Json& schema,
     if (schema.contains("minItems") &&
         schema["minItems"].is_number_unsigned() &&
         value.size() < schema["minItems"].get<std::size_t>()) {
-      errors.push_back(path + " needs at least " +
-                       std::to_string(schema["minItems"].get<std::size_t>()) +
-                       " items");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " needs at least " +
+                     std::to_string(schema["minItems"].get<std::size_t>()) +
+                     " items");
     }
     if (schema.contains("maxItems") &&
         schema["maxItems"].is_number_unsigned() &&
         value.size() > schema["maxItems"].get<std::size_t>()) {
-      errors.push_back(path + " allows at most " +
-                       std::to_string(schema["maxItems"].get<std::size_t>()) +
-                       " items");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " allows at most " +
+                     std::to_string(schema["maxItems"].get<std::size_t>()) +
+                     " items");
     }
     if (schema.contains("items") && schema["items"].is_object()) {
       for (std::size_t i = 0; i < value.size(); ++i) {
         ValidateAgainstSchema(schema["items"], value[i],
-                              path + "[" + std::to_string(i) + "]", errors,
+                              path + "[" + std::to_string(i) + "]", problems,
                               depth + 1);
       }
     }
@@ -215,11 +414,13 @@ void ValidateAgainstSchema(const Json& schema,
   if (value.is_number()) {
     if (schema.contains("minimum") && schema["minimum"].is_number() &&
         value.get<double>() < schema["minimum"].get<double>()) {
-      errors.push_back(path + " must be >= " + schema["minimum"].dump());
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " must be >= " + schema["minimum"].dump());
     }
     if (schema.contains("maximum") && schema["maximum"].is_number() &&
         value.get<double>() > schema["maximum"].get<double>()) {
-      errors.push_back(path + " must be <= " + schema["maximum"].dump());
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " must be <= " + schema["maximum"].dump());
     }
   }
 
@@ -228,16 +429,18 @@ void ValidateAgainstSchema(const Json& schema,
     if (schema.contains("minLength") &&
         schema["minLength"].is_number_unsigned() &&
         text.size() < schema["minLength"].get<std::size_t>()) {
-      errors.push_back(path + " is shorter than " +
-                       std::to_string(schema["minLength"].get<std::size_t>()) +
-                       " characters");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " is shorter than " +
+                     std::to_string(schema["minLength"].get<std::size_t>()) +
+                     " characters");
     }
     if (schema.contains("maxLength") &&
         schema["maxLength"].is_number_unsigned() &&
         text.size() > schema["maxLength"].get<std::size_t>()) {
-      errors.push_back(path + " is longer than " +
-                       std::to_string(schema["maxLength"].get<std::size_t>()) +
-                       " characters");
+      AddProblem(problems, ProblemKind::Arguments,
+                 path + " is longer than " +
+                     std::to_string(schema["maxLength"].get<std::size_t>()) +
+                     " characters");
     }
   }
 }
@@ -250,6 +453,15 @@ std::string ValidationIssue::ToString() const {
     where += " (" + tool_name + ")";
   }
   return where + ": " + message;
+}
+
+bool ValidationReport::HasSchemaIssues() const {
+  for (const auto& issue : issues) {
+    if (issue.kind == ValidationIssueKind::Schema) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::string ValidationReport::Summary() const {
@@ -266,6 +478,53 @@ std::string ValidationReport::Summary() const {
 JsonSchemaToolCallValidator::JsonSchemaToolCallValidator(
     ValidationLimits limits)
     : limits_(std::move(limits)) {}
+
+ValidationReport JsonSchemaToolCallValidator::ValidateToolSchemas(
+    const ModelRequest& request) const {
+  ValidationReport report;
+  if (!limits_.validate_schema) {
+    report.ok = true;
+    return report;
+  }
+
+  for (const auto& tool : request.tools) {
+    const Json schema =
+        Json::parse(tool.parameters_schema_json, nullptr, false);
+    if (schema.is_discarded()) {
+      ValidationIssue issue;
+      issue.tool_name = tool.name;
+      issue.kind = ValidationIssueKind::Schema;
+      issue.message = "the tool's parameters schema is not valid JSON";
+      report.issues.push_back(std::move(issue));
+      continue;
+    }
+    if (!schema.is_object()) {
+      ValidationIssue issue;
+      issue.tool_name = tool.name;
+      issue.kind = ValidationIssueKind::Schema;
+      issue.message = "the tool's parameters schema must be a JSON object";
+      report.issues.push_back(std::move(issue));
+      continue;
+    }
+
+    Problems problems;
+    CheckSchemaSupported(schema, "", problems, 0);
+    for (auto& problem : problems) {
+      ValidationIssue issue;
+      issue.tool_name = tool.name;
+      issue.kind = ValidationIssueKind::Schema;
+      std::string message = std::move(problem.message);
+      if (!message.empty() && message.front() == '.') {
+        message.erase(message.begin());
+      }
+      issue.message = std::move(message);
+      report.issues.push_back(std::move(issue));
+    }
+  }
+
+  report.ok = report.issues.empty();
+  return report;
+}
 
 ValidationReport JsonSchemaToolCallValidator::Validate(
     const ModelRequest& request,
@@ -290,42 +549,59 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
     report.issues.push_back(std::move(issue));
   }
 
+  std::vector<std::string> seen_ids;
   for (std::size_t i = 0; i < tool_calls.size(); ++i) {
     const ToolCall& call = tool_calls[i];
     const std::size_t index = i;
     const std::string name = call.name;
 
-    auto add_issue = [&report, index, &name](std::string message) {
+    auto add_issue = [&report, index, &name](ValidationIssueKind kind,
+                                             std::string message) {
       ValidationIssue issue;
       issue.index = index;
       issue.tool_name = name;
+      issue.kind = kind;
       issue.message = std::move(message);
       report.issues.push_back(std::move(issue));
     };
 
     if (limits_.require_ids && call.id.empty()) {
-      add_issue("has no id, so its result could not be sent back");
+      add_issue(ValidationIssueKind::Arguments,
+                "has no id, so its result could not be sent back");
+    }
+    if (limits_.require_unique_ids && !call.id.empty()) {
+      for (const auto& seen : seen_ids) {
+        if (seen == call.id) {
+          add_issue(ValidationIssueKind::Arguments,
+                    "reuses tool call id '" + call.id +
+                        "', so the results could not be told apart");
+          break;
+        }
+      }
+      seen_ids.push_back(call.id);
     }
     if (call.name.empty()) {
-      add_issue("has no tool name");
+      add_issue(ValidationIssueKind::Arguments, "has no tool name");
       continue;
     }
 
     const ToolDefinition* tool =
         limits_.require_known_tools ? request.FindTool(call.name) : nullptr;
     if (limits_.require_known_tools && tool == nullptr) {
-      add_issue("is not one of the tools offered in this request");
+      add_issue(ValidationIssueKind::Arguments,
+                "is not one of the tools offered in this request");
       continue;
     }
 
     const Json arguments = Json::parse(call.arguments_json, nullptr, false);
     if (arguments.is_discarded()) {
-      add_issue("arguments are not valid JSON");
+      add_issue(ValidationIssueKind::Arguments, "arguments are not valid JSON");
       continue;
     }
     if (limits_.require_arguments_object && !arguments.is_object()) {
-      add_issue("arguments are '" + DescribeType(arguments) +
-                "' but must be a JSON object");
+      add_issue(ValidationIssueKind::Arguments,
+                "arguments are '" + DescribeType(arguments) +
+                    "' but must be a JSON object");
       continue;
     }
 
@@ -335,16 +611,21 @@ ValidationReport JsonSchemaToolCallValidator::Validate(
     const Json schema =
         Json::parse(tool->parameters_schema_json, nullptr, false);
     if (schema.is_discarded()) {
-      add_issue("the tool's parameters schema is not valid JSON");
+      add_issue(ValidationIssueKind::Schema,
+                "the tool's parameters schema is not valid JSON");
       continue;
     }
-    std::vector<std::string> schema_errors;
-    ValidateAgainstSchema(schema, arguments, "", schema_errors, 0);
-    for (auto& error : schema_errors) {
-      if (!error.empty() && error.front() == '.') {
-        error.erase(error.begin());
+    Problems problems;
+    ValidateAgainstSchema(schema, arguments, "", problems, 0);
+    for (auto& problem : problems) {
+      std::string message = std::move(problem.message);
+      if (!message.empty() && message.front() == '.') {
+        message.erase(message.begin());
       }
-      add_issue(std::move(error));
+      add_issue(problem.kind == ProblemKind::Schema
+                    ? ValidationIssueKind::Schema
+                    : ValidationIssueKind::Arguments,
+                std::move(message));
     }
   }
 

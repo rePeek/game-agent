@@ -105,8 +105,12 @@ nlohmann::json BuildToolChoice(const ToolChoice& choice, std::string& error) {
   return nullptr;
 }
 
-bool IsGpt5Family(const std::string& model) {
-  return model.starts_with("gpt-5");
+ParameterDialect ResolveDialect(const std::string& model,
+                                ParameterDialect requested) {
+  if (requested != ParameterDialect::Auto) {
+    return requested;
+  }
+  return DialectForModel(model);
 }
 
 }  // namespace
@@ -125,7 +129,8 @@ const char* WireRole(Role role) {
   return "user";
 }
 
-BuildOutcome BuildChatCompletionRequest(const ModelRequest& request) {
+BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
+                                        ParameterDialect dialect) {
   BuildOutcome outcome;
 
   if (request.model.empty()) {
@@ -180,13 +185,18 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request) {
   }
   body["tool_choice"] = std::move(tool_choice);
 
+  const ParameterDialect effective = ResolveDialect(request.model, dialect);
   if (request.max_tokens.has_value()) {
-    body["max_tokens"] = request.max_tokens.value();
+    if (effective == ParameterDialect::ReasoningTokens) {
+      body["max_completion_tokens"] = request.max_tokens.value();
+    } else {
+      body["max_tokens"] = request.max_tokens.value();
+    }
   }
-  if (request.seed.has_value()) {
-    body["seed"] = request.seed.value();
-  }
-  if (!IsGpt5Family(request.model)) {
+  if (effective == ParameterDialect::LegacyTokens) {
+    if (request.seed.has_value()) {
+      body["seed"] = request.seed.value();
+    }
     if (request.temperature.has_value()) {
       body["temperature"] = request.temperature.value();
     }
@@ -201,5 +211,20 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request) {
 }
 
 }  // namespace detail
+
+ParameterDialect DialectForModel(const std::string& model) {
+  // Reasoning-first families: on Chat Completions they use
+  // max_completion_tokens and reject sampling controls.
+  static const char* const kReasoningPrefixes[] = {
+      "gpt-5", "o1", "o3", "o4", "o5",
+  };
+  for (const char* prefix : kReasoningPrefixes) {
+    if (model.starts_with(prefix)) {
+      return ParameterDialect::ReasoningTokens;
+    }
+  }
+  return ParameterDialect::LegacyTokens;
+}
+
 }  // namespace openai
 }  // namespace llm

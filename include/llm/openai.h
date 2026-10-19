@@ -42,6 +42,20 @@ struct RetryPolicy {
   int max_delay_ms = 8000;
 };
 
+/// Which Chat Completions parameter dialect an endpoint speaks.
+enum class ParameterDialect {
+  /// Pick from the model id (see DialectForModel).
+  Auto,
+  /// `max_tokens` plus temperature/top_p/seed (gpt-4.x and older).
+  LegacyTokens,
+  /// `max_completion_tokens` and no sampling controls (the gpt-5 and
+  /// o-series reasoning families reject them on Chat Completions).
+  ReasoningTokens,
+};
+
+/// The dialect assumed for a model id when ParameterDialect::Auto is used.
+ParameterDialect DialectForModel(const std::string& model);
+
 /// Capabilities of OpenAI's own API. Pointing this provider at an
 /// OpenAI-compatible server (OpenRouter, a local gateway) means overriding
 /// them: a server that ignores `tool_choice: "required"` or `strict` schemas
@@ -64,6 +78,10 @@ struct ProviderOptions {
   RetryPolicy retry;
 
   ProviderCapabilities capabilities = DefaultCapabilities();
+
+  /// Override the token-limit/sampling parameter mapping for an endpoint that
+  /// differs from OpenAI's own model families.
+  ParameterDialect parameter_dialect = ParameterDialect::Auto;
 
   /// When a request demands something the provider cannot enforce (a forced
   /// tool choice, a strict schema), report Unsupported by default. Setting this

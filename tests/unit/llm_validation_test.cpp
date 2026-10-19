@@ -312,5 +312,120 @@ TEST(LlmValidationTest, DefaultValidatorIsSharedAndUsable) {
   EXPECT_TRUE(report.ok) << report.Summary();
 }
 
+// ---------------------------------------------------------------------------
+// CTX-0: a schema the validator cannot enforce is refused, not waved through
+// ---------------------------------------------------------------------------
+TEST(LlmValidationTest, UnknownSchemaTypeIsASchemaIssue) {
+  const ModelRequest request = RequestWith({Tool(
+      "odd",
+      R"({"type":"object","properties":{"when":{"type":"timestamp"}}})")});
+
+  const ValidationReport schemas =
+      Validate(request, {ToolCall{"call_1", "odd", R"({"when":"now"})"}},
+               ValidationLimits{});
+
+  // Argument-level validation stays quiet: 'timestamp' simply is not checked.
+  EXPECT_FALSE(schemas.ok) << schemas.Summary();
+  EXPECT_TRUE(schemas.HasSchemaIssues());
+}
+
+TEST(LlmValidationTest, UnsupportedKeywordsAreReportedNotIgnored) {
+  struct Case {
+    const char* schema;
+    const char* keyword;
+  };
+  const Case cases[] = {
+      {R"({"type":"object","properties":{"name":{"type":"string","pattern":"^a"}}})",
+       "pattern"},
+      {R"({"type":"object","properties":{"when":{"type":"string","format":"date"}}})",
+       "format"},
+      {R"({"type":"object","properties":{"n":{"type":"number","multipleOf":2}}})",
+       "multipleOf"},
+      {R"({"type":"object","properties":{"n":{"not":{"type":"null"}}}})",
+       "not"},
+      {R"({"type":"object","properties":{"a":{"$ref":"#/definitions/x"}}})",
+       "$ref"},
+  };
+
+  const JsonSchemaToolCallValidator validator;
+  for (const Case& test_case : cases) {
+    const ModelRequest request = RequestWith({Tool("t", test_case.schema)});
+    const ValidationReport report = validator.ValidateToolSchemas(request);
+    EXPECT_FALSE(report.ok) << test_case.keyword;
+    EXPECT_TRUE(report.HasSchemaIssues()) << test_case.keyword;
+    EXPECT_NE(report.Summary().find(test_case.keyword), std::string::npos)
+        << report.Summary();
+    // The provider refuses such a request before sending it, which is what
+    // makes the keyword check worth having separately from the batch check.
+  }
+}
+
+TEST(LlmValidationTest, AnnotationsAreAllowed) {
+  const ModelRequest request = RequestWith({Tool(
+      "t",
+      R"({"type":"object","title":"Params","description":"d","properties":{"level":{"type":"integer","description":"1-5","default":1,"examples":[3]}},"required":["level"],"$comment":"fine"})")});
+
+  const ValidationReport report =
+      Validate(request, {ToolCall{"call_1", "t", R"({"level":3})"}});
+
+  EXPECT_TRUE(report.ok) << report.Summary();
+  EXPECT_FALSE(report.HasSchemaIssues());
+}
+
+TEST(LlmValidationTest, ValidateToolSchemasChecksWithoutABatch) {
+  const JsonSchemaToolCallValidator validator;
+
+  const ValidationReport ok = validator.ValidateToolSchemas(DefaultRequest());
+  EXPECT_TRUE(ok.ok) << ok.Summary();
+
+  const ValidationReport broken = validator.ValidateToolSchemas(RequestWith({Tool(
+      "t",
+      R"({"type":"object","properties":{"a":{"type":"string","pattern":"x"}}})")}));
+  EXPECT_FALSE(broken.ok);
+  EXPECT_TRUE(broken.HasSchemaIssues());
+  EXPECT_NE(broken.Summary().find("pattern"), std::string::npos);
+
+  // A schema that is not even JSON is refused here too.
+  const ValidationReport not_json =
+      validator.ValidateToolSchemas(RequestWith({Tool("t", "{oops")}));
+  EXPECT_FALSE(not_json.ok);
+  EXPECT_TRUE(not_json.HasSchemaIssues());
+}
+
+TEST(LlmValidationTest, DeeplyNestedSchemasAreRefusedNotSkipped) {
+  // Built by wrapping, so the result is balanced by construction.
+  std::string schema = R"({"type":"integer"})";
+  constexpr int kDepth = 40;
+  for (int i = 0; i < kDepth; ++i) {
+    schema = R"({"type":"object","properties":{"a":)" + schema + "}}";
+  }
+
+  const ModelRequest request = RequestWith({Tool("deep", schema)});
+  const JsonSchemaToolCallValidator validator;
+  const ValidationReport report = validator.ValidateToolSchemas(request);
+
+  EXPECT_FALSE(report.ok) << report.Summary();
+  EXPECT_TRUE(report.HasSchemaIssues());
+  EXPECT_NE(report.Summary().find("deeper than"), std::string::npos)
+      << report.Summary();
+}
+
+TEST(LlmValidationTest, DuplicateToolCallIdsAreRejected) {
+  const std::vector<ToolCall> calls = {
+      ToolCall{"call_1", "set_pressing_intensity", R"({"level":1})"},
+      ToolCall{"call_1", "set_defensive_line", R"({"height":"low"})"},
+  };
+
+  const ValidationReport report = Validate(DefaultRequest(), calls);
+
+  EXPECT_FALSE(report.ok);
+  EXPECT_NE(report.Summary().find("reuses tool call id"), std::string::npos);
+
+  // Callers can ask for the check to be relaxed, but not by accident.
+  ValidationLimits relaxed;
+  relaxed.require_unique_ids = false;
+  EXPECT_TRUE(Validate(DefaultRequest(), calls, relaxed).ok);
+}
+
 }  // namespace
 }  // namespace llm

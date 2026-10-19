@@ -66,6 +66,11 @@ struct CompletionResult {
   /// provider-side guarantee was downgraded to SDK-side validation.
   std::vector<std::string> warnings;
 
+  /// HTTP attempts this *single* logical completion needed (1 = no retry,
+  /// 0 = nothing was sent because the request was refused before sending).
+  /// Retries never turn into extra reasoning rounds.
+  int http_attempts = 0;
+
   bool IsSuccess() const { return status == CompletionStatus::Success; }
   explicit operator bool() const { return IsSuccess(); }
   bool HasToolCalls() const { return !tool_calls.empty(); }

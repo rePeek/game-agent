@@ -163,7 +163,9 @@ TEST(LlmOpenAIBuilderTest, BuildsToolsAndRequiredToolChoice) {
 
   ASSERT_TRUE(built.ok) << built.error;
   EXPECT_EQ(built.body["model"], "gpt-5.6");
-  EXPECT_EQ(built.body["max_tokens"], 200);
+  EXPECT_EQ(built.body["max_completion_tokens"], 200)
+      << "reasoning-first models take max_completion_tokens";
+  EXPECT_FALSE(built.body.contains("max_tokens"));
   EXPECT_EQ(built.body["tool_choice"], "required");
   EXPECT_FALSE(built.body.contains("parallel_tool_calls"))
       << "the SDK must not cap the number of tool calls";
@@ -856,6 +858,141 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
   EXPECT_EQ(messages[4]["tool_call_id"], decision.tool_calls[1].id);
   EXPECT_EQ(messages[5]["role"], "user");
   EXPECT_EQ(messages[5]["content"], "Opponent switched to a low block.");
+}
+
+// ---------------------------------------------------------------------------
+// CTX-0: parameter dialect, strict parsing, attempt accounting
+// ---------------------------------------------------------------------------
+TEST(LlmOpenAIBuilderTest, ParameterDialectFollowsTheModelFamily) {
+  // Reasoning-first families: max_completion_tokens, no sampling controls.
+  ModelRequest reasoning = MakeRequest();
+  reasoning.model = models::kGpt56;
+  reasoning.max_tokens = 100;
+  reasoning.temperature = 0.5;
+  reasoning.top_p = 0.5;
+  reasoning.seed = 7;
+  const detail::BuildOutcome gpt5 =
+      detail::BuildChatCompletionRequest(reasoning);
+  ASSERT_TRUE(gpt5.ok) << gpt5.error;
+  EXPECT_EQ(gpt5.body["max_completion_tokens"], 100);
+  EXPECT_FALSE(gpt5.body.contains("max_tokens"));
+  EXPECT_FALSE(gpt5.body.contains("temperature"));
+  EXPECT_FALSE(gpt5.body.contains("top_p"));
+  EXPECT_FALSE(gpt5.body.contains("seed"));
+
+  // Legacy families keep the documented fields.
+  ModelRequest legacy = reasoning;
+  legacy.model = models::kGpt41;
+  const detail::BuildOutcome gpt41 = detail::BuildChatCompletionRequest(legacy);
+  ASSERT_TRUE(gpt41.ok) << gpt41.error;
+  EXPECT_EQ(gpt41.body["max_tokens"], 100);
+  EXPECT_FALSE(gpt41.body.contains("max_completion_tokens"));
+  EXPECT_DOUBLE_EQ(gpt41.body["temperature"].get<double>(), 0.5);
+  EXPECT_EQ(gpt41.body["seed"], 7);
+
+  // An endpoint that differs from OpenAI can be told so explicitly.
+  const detail::BuildOutcome overridden = detail::BuildChatCompletionRequest(
+      reasoning, ParameterDialect::LegacyTokens);
+  ASSERT_TRUE(overridden.ok) << overridden.error;
+  EXPECT_EQ(overridden.body["max_tokens"], 100);
+  EXPECT_FALSE(overridden.body.contains("max_completion_tokens"));
+
+  EXPECT_EQ(DialectForModel(models::kGpt56), ParameterDialect::ReasoningTokens);
+  EXPECT_EQ(DialectForModel("o3-mini"), ParameterDialect::ReasoningTokens);
+  EXPECT_EQ(DialectForModel(models::kGpt41), ParameterDialect::LegacyTokens);
+  EXPECT_EQ(DialectForModel("some-local-model"),
+            ParameterDialect::LegacyTokens);
+}
+
+TEST(LlmOpenAIParserTest, MissingArgumentsAreNotInvented) {
+  nlohmann::json message = TwoCallsMessage();
+  message["tool_calls"][0]["function"].erase("arguments");
+
+  const detail::ParsedCompletion parsed =
+      detail::ParseChatCompletion(MakeResponse(message));
+
+  EXPECT_FALSE(parsed.ok);
+  EXPECT_NE(parsed.error.find("no arguments"), std::string::npos);
+
+  // Same for an explicit null: the SDK never fills in arguments.
+  nlohmann::json null_message = TwoCallsMessage();
+  null_message["tool_calls"][0]["function"]["arguments"] = nullptr;
+  EXPECT_FALSE(detail::ParseChatCompletion(MakeResponse(null_message)).ok);
+}
+
+TEST(LlmOpenAIProviderTest, UnenforceableSchemaIsRefusedBeforeSending) {
+  Fixture fixture;
+  ModelRequest request = MakeRequest();
+  request.tools[0].parameters_schema_json =
+      R"({"type":"object","properties":{"level":{"type":"integer","pattern":"[0-5]"}}})";
+
+  const CompletionResult result = fixture.Complete(request, fixture.Options());
+
+  EXPECT_EQ(result.status, CompletionStatus::Unsupported);
+  ASSERT_TRUE(result.error.has_value());
+  EXPECT_EQ(result.error->kind, ErrorKind::Unsupported);
+  EXPECT_NE(result.ErrorMessage().find("pattern"), std::string::npos);
+  EXPECT_TRUE(fixture.transport->requests.empty());
+  EXPECT_EQ(result.http_attempts, 0);
+}
+
+TEST(LlmOpenAIProviderTest, AttemptsAreAccountedFor) {
+  // Refused before sending: nothing was attempted.
+  {
+    Fixture fixture;
+    ProviderOptions options = fixture.Options();
+    options.api_key.clear();
+    EXPECT_EQ(fixture.Complete(MakeRequest(), std::move(options)).http_attempts,
+              0);
+  }
+  // One request.
+  {
+    Fixture fixture;
+    fixture.transport->responses.push_back(
+        FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+    const CompletionResult result =
+        fixture.Complete(MakeRequest(), fixture.Options());
+    ASSERT_TRUE(result.IsSuccess()) << result.ErrorMessage();
+    EXPECT_EQ(result.http_attempts, 1);
+  }
+  // Retried once.
+  {
+    Fixture fixture;
+    fixture.transport->responses.push_back(
+        FakeTransport::WithStatus(429, R"({"error":{"message":"slow down"}})"));
+    fixture.transport->responses.push_back(
+        FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+    const CompletionResult result =
+        fixture.Complete(MakeRequest(), fixture.Options());
+    ASSERT_TRUE(result.IsSuccess()) << result.ErrorMessage();
+    EXPECT_EQ(result.http_attempts, 2);
+  }
+  // Exhausted the budget.
+  {
+    Fixture fixture;
+    fixture.transport->responses.push_back(FakeTransport::Timeout());
+    ProviderOptions options = fixture.Options();
+    options.retry.max_attempts = 3;
+    const CompletionResult result =
+        fixture.Complete(MakeRequest(), std::move(options));
+    EXPECT_EQ(result.status, CompletionStatus::ProviderError);
+    EXPECT_EQ(result.http_attempts, 3);
+  }
+}
+
+TEST(LlmOpenAIProviderTest, TimeoutIsForwardedToTheTransport) {
+  Fixture fixture;
+  fixture.transport->responses.push_back(FakeTransport::Timeout());
+
+  ProviderOptions options = fixture.Options();
+  options.timeout_seconds = 7;
+  options.retry.max_attempts = 1;
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), std::move(options));
+
+  ASSERT_EQ(fixture.transport->requests.size(), 1u);
+  EXPECT_EQ(fixture.transport->requests[0].timeout_seconds, 7);
+  EXPECT_EQ(result.error->kind, ErrorKind::Timeout);
 }
 
 }  // namespace

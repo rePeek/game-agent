@@ -29,14 +29,19 @@ std::string OptionalString(const nlohmann::json& value,
 
 /// Arguments travel as text. A conforming server sends a JSON string; an object
 /// (seen from some compatible servers) is re-serialized so it can still be
-/// carried, and anything else is rejected.
+/// carried, and anything else — including a missing or null arguments object —
+/// is rejected: the SDK never invents arguments the model did not produce.
 bool ReadArguments(const nlohmann::json& function,
                    std::string& arguments,
                    std::string& error) {
   const auto it = function.find("arguments");
-  if (it == function.end() || it->is_null()) {
-    arguments = "{}";
-    return true;
+  if (it == function.end()) {
+    error = "tool call has no arguments object";
+    return false;
+  }
+  if (it->is_null()) {
+    error = "tool call has null arguments";
+    return false;
   }
   if (it->is_string()) {
     arguments = it->get<std::string>();

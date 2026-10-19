@@ -162,11 +162,29 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
         unenforceable);
   }
 
-  // 2. Build the request.
-  detail::BuildOutcome built = detail::BuildChatCompletionRequest(request);
+  // 2. Build the request. A malformed request is the caller's error and is
+  //    reported as such before anything else is checked.
+  detail::BuildOutcome built =
+      detail::BuildChatCompletionRequest(request, options_.parameter_dialect);
   if (!built.ok) {
     return ProviderErrorResult(
         request, MakeError(ErrorKind::InvalidRequest, built.error));
+  }
+
+  // 3. A schema this validator cannot enforce must not be sent either: Success
+  //    would otherwise claim a check that never happened. There is no
+  //    downgrade here — the SDK simply cannot verify those constraints.
+  if (options_.validator) {
+    const ValidationReport schemas =
+        options_.validator->ValidateToolSchemas(request);
+    if (!schemas.ok) {
+      result.status = CompletionStatus::Unsupported;
+      result.error =
+          MakeError(ErrorKind::Unsupported,
+                    "the request uses a tool schema that cannot be enforced: " +
+                        schemas.Summary());
+      return result;
+    }
   }
 
   HttpRequest http;
@@ -183,11 +201,13 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     http.headers.push_back(header);
   }
 
-  // 3. One completion, one (possibly retried) HTTP request.
+  // 4. One completion, one (possibly retried) HTTP request.
   const int max_attempts = std::max(1, options_.retry.max_attempts);
   int delay_ms = std::max(0, options_.retry.initial_delay_ms);
+  int attempts_made = 0;
   HttpResponse response;
   for (int attempt = 1;; ++attempt) {
+    ++attempts_made;
     response = options_.transport->Send(http);
 
     const bool succeeded = response.IsSuccess();
@@ -204,31 +224,39 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     }
   }
 
+  // Retries belong to this one logical completion; they are never extra
+  // reasoning rounds.
+  result.http_attempts = attempts_made;
   result.provider_metadata = response.body;
 
+  // The error paths below keep what was already recorded on `result`
+  // (attempt count, raw body), so they must not build a fresh result.
   if (!response.transport_ok) {
-    return ProviderErrorResult(
-        request,
+    result.status = CompletionStatus::ProviderError;
+    result.error =
         MakeError(ClassifyTransportError(response.error_kind),
                   "transport failure: " + (response.error.empty()
                                                ? std::string("unknown error")
                                                : response.error),
-                  0, true, response.body));
+                  0, true, response.body);
+    return result;
   }
   if (!response.IsSuccess()) {
-    return ProviderErrorResult(
-        request,
+    result.status = CompletionStatus::ProviderError;
+    result.error =
         MakeError(ClassifyStatus(response.status),
                   detail::ExtractErrorMessage(response.body), response.status,
-                  IsRetryableStatus(response.status), response.body));
+                  IsRetryableStatus(response.status), response.body);
+    return result;
   }
 
-  // 4. Parse the completion.
+  // 5. Parse the completion.
   detail::ParsedCompletion parsed = detail::ParseChatCompletion(response.body);
   if (!parsed.ok) {
-    return ProviderErrorResult(
-        request, MakeError(ErrorKind::Parse, parsed.error, response.status,
-                           false, response.body));
+    result.status = CompletionStatus::ProviderError;
+    result.error = MakeError(ErrorKind::Parse, parsed.error, response.status,
+                             false, response.body);
+    return result;
   }
 
   if (!parsed.model.empty()) {
@@ -239,7 +267,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   result.assistant_text = parsed.assistant_text;
   result.tool_calls = parsed.tool_calls;
 
-  // 5. Decide the status the caller branches on.
+  // 6. Decide the status the caller branches on.
   if (!parsed.refusal.empty()) {
     result.status = CompletionStatus::Refused;
     result.error =
@@ -279,7 +307,9 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   const ValidationReport report =
       options_.validator->Validate(request, result.tool_calls);
   if (!report.ok) {
-    result.status = CompletionStatus::InvalidToolCalls;
+    result.status = report.HasSchemaIssues()
+                        ? CompletionStatus::Unsupported
+                        : CompletionStatus::InvalidToolCalls;
     result.error =
         MakeError(ErrorKind::InvalidRequest, report.Summary(), response.status);
     return result;
