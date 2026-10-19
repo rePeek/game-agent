@@ -1,5 +1,4 @@
 #include "../utils/test_fixtures.h"
-#include "ai/anthropic.h"
 #include "ai/logger.h"
 #include "ai/openai.h"
 #include "ai/tools.h"
@@ -138,15 +137,6 @@ class ToolCallingIntegrationTest
         use_real_api_ = true;
         client_ = ai::openai::create_client(api_key);
         model_ = ai::openai::models::kGpt56Luna;
-      } else {
-        use_real_api_ = false;
-      }
-    } else if (provider == "anthropic") {
-      const char* api_key = std::getenv("ANTHROPIC_API_KEY");
-      if (api_key && *api_key != '\0') {
-        use_real_api_ = true;
-        client_ = ai::anthropic::create_client(api_key);
-        model_ = ai::anthropic::models::kClaudeSonnet5;
       } else {
         use_real_api_ = false;
       }
@@ -297,11 +287,6 @@ TEST_P(ToolCallingIntegrationTest, AutoToolChoice) {
 TEST_P(ToolCallingIntegrationTest, NoToolChoice) {
   if (!use_real_api_) {
     GTEST_SKIP() << "No API key set for " << GetParam();
-  }
-
-  // Skip for Anthropic as it doesn't support tool_choice "none"
-  if (GetParam() == "anthropic") {
-    GTEST_SKIP() << "Anthropic doesn't support tool_choice 'none'";
   }
 
   GenerateOptions options(model_, "What's the weather like?");
@@ -617,11 +602,11 @@ TEST_P(ToolCallingIntegrationTest, ToolSchemaValidation) {
   }
 }
 
-// Instantiate tests for both providers
+// Instantiate tests for the OpenAI-compatible provider
 INSTANTIATE_TEST_SUITE_P(
     ProviderTests,
     ToolCallingIntegrationTest,
-    ::testing::Values("openai", "anthropic"),
+    ::testing::Values("openai"),
     [](const ::testing::TestParamInfo<ToolCallingIntegrationTest::ParamType>&
            info) { return info.param; });
 
@@ -664,49 +649,6 @@ TEST_F(OpenAISpecificToolTest, ToolChoiceNoneSupport) {
   TestAssertions::assertSuccess(result);
   EXPECT_FALSE(result.text.empty());
   EXPECT_FALSE(result.has_tool_calls());
-}
-
-class AnthropicSpecificToolTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    const char* api_key = std::getenv("ANTHROPIC_API_KEY");
-    if (api_key && *api_key != '\0') {
-      use_real_api_ = true;
-      client_ = ai::anthropic::create_client(api_key);
-      model_ = ai::anthropic::models::kClaudeSonnet5;
-    } else {
-      use_real_api_ = false;
-    }
-
-    tools_ = ToolTestFixtures::createTestToolSet();
-  }
-
-  bool use_real_api_ = false;
-  std::optional<ai::Client> client_;
-  std::string model_;
-  ToolSet tools_;
-};
-
-// Test Anthropic-specific behavior
-TEST_F(AnthropicSpecificToolTest, MaxTokensRequiredWithTools) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No ANTHROPIC_API_KEY environment variable set";
-  }
-
-  GenerateOptions options(model_, "What's the weather in Paris?");
-  options.tools = tools_;
-  options.max_tokens = 200;  // Anthropic requires max_tokens
-
-  auto result = client_->generate_text(options);
-
-  // Verify the request succeeded (may have tool calls instead of text)
-  EXPECT_TRUE(result.is_success())
-      << "Expected successful result but got error: " << result.error_message();
-  EXPECT_FALSE(result.error.has_value());
-
-  // Note: When tools are provided, the model may return tool calls instead of
-  // text This test just verifies that requests with tools + max_tokens succeed
-  EXPECT_LE(result.usage.completion_tokens, 200);
 }
 
 }  // namespace test

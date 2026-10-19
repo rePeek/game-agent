@@ -1,5 +1,4 @@
 #include "../utils/test_fixtures.h"
-#include "ai/anthropic.h"
 #include "ai/logger.h"
 #include "ai/openai.h"
 #include "ai/tools.h"
@@ -33,15 +32,6 @@ class MultiStepDuplicateExecutionTest
         use_real_api_ = true;
         client_ = ai::openai::create_client(api_key);
         model_ = ai::openai::models::kGpt56Luna;
-      } else {
-        use_real_api_ = false;
-      }
-    } else if (provider == "anthropic") {
-      const char* api_key = std::getenv("ANTHROPIC_API_KEY");
-      if (api_key && *api_key != '\0') {
-        use_real_api_ = true;
-        client_ = ai::anthropic::create_client(api_key);
-        model_ = ai::anthropic::models::kClaudeSonnet5;
       } else {
         use_real_api_ = false;
       }
@@ -215,7 +205,7 @@ TEST_P(MultiStepDuplicateExecutionTest, MultipleStepsNoDuplicateExecution) {
 INSTANTIATE_TEST_SUITE_P(
     ProviderTests,
     MultiStepDuplicateExecutionTest,
-    ::testing::Values("openai", "anthropic"),
+    ::testing::Values("openai"),
     [](const ::testing::TestParamInfo<
         MultiStepDuplicateExecutionTest::ParamType>& info) {
       return info.param;

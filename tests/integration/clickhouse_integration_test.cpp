@@ -1,4 +1,3 @@
-#include "ai/anthropic.h"
 #include "ai/openai.h"
 #include "ai/tools.h"
 #include "ai/types/generate_options.h"
@@ -201,13 +200,6 @@ class ClickHouseIntegrationTest : public ::testing::TestWithParam<std::string> {
       }
       client_ = std::make_shared<Client>(openai::create_client());
       model_ = openai::models::kDefaultModel;
-    } else if (provider_type_ == "anthropic") {
-      const char* api_key = std::getenv("ANTHROPIC_API_KEY");
-      if (!api_key || *api_key == '\0') {
-        return;
-      }
-      client_ = std::make_shared<Client>(anthropic::create_client());
-      model_ = anthropic::models::kDefaultModel;
     }
     use_real_api_ = true;
 
@@ -415,10 +407,10 @@ TEST_P(ClickHouseIntegrationTest, ExploreExistingSchema) {
   EXPECT_TRUE(sql.find("100") != std::string::npos);
 }
 
-// Instantiate tests for both providers
+// Instantiate tests for the OpenAI-compatible provider
 INSTANTIATE_TEST_SUITE_P(Providers,
                          ClickHouseIntegrationTest,
-                         ::testing::Values("openai", "anthropic"));
+                         ::testing::Values("openai"));
 
 }  // namespace test
 }  // namespace ai

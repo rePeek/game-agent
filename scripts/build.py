@@ -220,7 +220,6 @@ def main(mode: str, tests: bool, clean: bool, verbose: bool, export_compile_comm
 
 [bold]To run examples (after setting API keys):[/bold]
   [cyan]export OPENAI_API_KEY=your_openai_key[/cyan]
-  [cyan]export ANTHROPIC_API_KEY=your_anthropic_key[/cyan]
   [cyan]{build_dir}/examples/basic_chat{example_suffix}[/cyan]
   [cyan]{build_dir}/examples/streaming_chat{example_suffix}[/cyan]
 {tests_result}""",

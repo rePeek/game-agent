@@ -4,19 +4,17 @@
  * This example demonstrates basic text generation using the AI SDK.
  * It shows how to:
  * - Use the simple generate_text API
- * - Handle both OpenAI and Anthropic providers
+ * - Handle OpenAI-compatible providers
  * - Check for errors and display results
  *
  * Usage:
  *   export OPENAI_API_KEY=your_key_here
- *   export ANTHROPIC_API_KEY=your_key_here
  *   ./basic_chat
  */
 
 #include <iostream>
 #include <string>
 
-#include <ai/anthropic.h>
 #include <ai/openai.h>
 
 int main() {
@@ -92,26 +90,7 @@ int main() {
     std::cout << "Error: " << result3.error_message() << "\n\n";
   }
 
-  // Example 4: Try Anthropic Claude (if API key available)
-  std::cout << "4. Generating text with Anthropic Claude:\n";
-  std::cout << "Question: Write a haiku about programming.\n\n";
-
-  auto client4 = ai::anthropic::create_client();
-  ai::GenerateOptions options4;
-  options4.model = ai::anthropic::models::kClaudeSonnet5;
-  options4.prompt =
-      "Write a haiku about programming. Just the haiku, nothing else.";
-
-  auto result4 = client4.generate_text(options4);
-
-  if (result4) {
-    std::cout << "Haiku:\n" << result4.text << "\n";
-    std::cout << "Usage: " << result4.usage.total_tokens << " tokens\n\n";
-  } else {
-    std::cout << "Error: " << result4.error_message() << "\n\n";
-  }
-
-  // Example 5: Using GenerateOptions for more control
+  // Example 4: Using GenerateOptions for more control
   std::cout << "5. Using GenerateOptions for fine control:\n";
 
   ai::GenerateOptions options;
@@ -134,7 +113,6 @@ int main() {
   std::cout << "Example completed!\n";
   std::cout << "\nTip: Make sure to set your API keys:\n";
   std::cout << "  export OPENAI_API_KEY=your_openai_key\n";
-  std::cout << "  export ANTHROPIC_API_KEY=your_anthropic_key\n";
 
   return 0;
 }

@@ -22,13 +22,6 @@ class AITestFixture : public ::testing::Test {
   static constexpr const char* kTestModel = "test-model";
   static constexpr const char* kTestPrompt = "Hello, world!";
   static constexpr const char* kTestBaseUrl = "https://api.openai.com";
-
-  // Anthropic test data
-  static constexpr const char* kTestAnthropicApiKey = "sk-ant-test123456789";
-  static constexpr const char* kTestAnthropicModel =
-      "claude-sonnet-4-5-20250929";
-  static constexpr const char* kTestAnthropicBaseUrl =
-      "https://api.anthropic.com";
 };
 
 // OpenAI specific test fixture
@@ -51,26 +44,6 @@ class OpenAITestFixture : public AITestFixture {
   Message createSystemMessage(const std::string& content);
 };
 
-// Anthropic specific test fixture
-class AnthropicTestFixture : public AITestFixture {
- protected:
-  void SetUp() override;
-
-  // Sample request/response data
-  GenerateOptions createBasicAnthropicOptions();
-  GenerateOptions createAdvancedAnthropicOptions();
-  nlohmann::json createValidAnthropicResponse();
-  nlohmann::json createAnthropicErrorResponse(int status_code,
-                                              const std::string& message);
-  nlohmann::json createAnthropicStreamResponse();
-
-  // Message builders
-  Messages createSampleAnthropicConversation();
-  Message createAnthropicUserMessage(const std::string& content);
-  Message createAnthropicAssistantMessage(const std::string& content);
-  Message createAnthropicSystemMessage(const std::string& content);
-};
-
 // Test data generators
 class TestDataGenerator {
  public:
@@ -89,7 +62,6 @@ class TestDataGenerator {
 
   // Generate streaming events
   static std::vector<std::string> createStreamingEvents();
-  static std::vector<std::string> createAnthropicStreamingEvents();
 
   // Edge case data
   static GenerateOptions createEdgeCaseOptions();
@@ -117,11 +89,6 @@ class TestAssertions {
   static void assertClientValid(const class OpenAIClient& client);
   static void assertModelSupported(const class OpenAIClient& client,
                                    const std::string& model);
-
-  // Assert Anthropic client state
-  static void assertAnthropicClientValid(const class AnthropicClient& client);
-  static void assertAnthropicModelSupported(const class AnthropicClient& client,
-                                            const std::string& model);
 };
 
 }  // namespace test

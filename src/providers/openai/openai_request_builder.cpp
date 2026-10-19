@@ -103,7 +103,6 @@ nlohmann::json OpenAIRequestBuilder::build_request_json(
   // sampling controls ("'temperature' does not support 0.0 with this model.
   // Only the default (1) value is supported."). Keep accepting the
   // provider-neutral options while omitting them for those model IDs,
-  // mirroring the Anthropic builder.
   const bool is_gpt5_family = options.model.starts_with("gpt-5");
   const bool rejects_sampling_parameters = is_gpt5_family;
   const auto add_sampling_parameter = [&](const char* key,
@@ -202,30 +201,6 @@ nlohmann::json OpenAIRequestBuilder::build_request_json(
                             tools_array.size(),
                             options.tool_choice.to_string());
     }
-  }
-
-  return request;
-}
-
-nlohmann::json OpenAIRequestBuilder::build_request_json(
-    const EmbeddingOptions& options) {
-  nlohmann::json request{{"model", options.model}, {"input", options.input}};
-
-  // Set encoding format (default to float for compatibility)
-  if (options.encoding_format) {
-    request["encoding_format"] = options.encoding_format.value();
-  } else {
-    request["encoding_format"] = "float";
-  }
-
-  // Add dimensions if specified
-  if (options.dimensions && options.dimensions.value() > 0) {
-    request["dimensions"] = options.dimensions.value();
-  }
-
-  // Add user identifier if specified
-  if (options.user) {
-    request["user"] = options.user.value();
   }
 
   return request;

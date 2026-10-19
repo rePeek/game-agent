@@ -3,18 +3,16 @@
  *
  * A simple test to verify that tool calling works with the provider
  * implementations. This example tests the integration between the tool system
- * and the OpenAI/Anthropic clients.
+ * and the OpenAI-compatible client.
  *
  * Usage:
  *   export OPENAI_API_KEY=your_key_here
- *   export ANTHROPIC_API_KEY=your_key_here
  *   ./test_tool_integration
  */
 
 #include <iostream>
 #include <string>
 
-#include <ai/anthropic.h>
 #include <ai/openai.h>
 #include <ai/tools.h>
 
@@ -50,50 +48,6 @@ void test_openai_tools() {
   options.max_tokens = 100;
 
   std::cout << "Making request to OpenAI with forced tool usage...\n";
-
-  auto result = client.generate_text(options);
-
-  if (result) {
-    std::cout << "✅ Request successful!\n";
-    std::cout << "Response: " << result.text << "\n";
-    std::cout << "Tool calls: " << result.tool_calls.size() << "\n";
-    std::cout << "Tool results: " << result.tool_results.size() << "\n";
-
-    if (!result.tool_calls.empty()) {
-      const auto& call = result.tool_calls[0];
-      std::cout << "First tool call: " << call.tool_name << "\n";
-      std::cout << "Arguments: " << call.arguments.dump() << "\n";
-    }
-
-    if (!result.tool_results.empty()) {
-      const auto& tool_result = result.tool_results[0];
-      std::cout << "First tool result: " << tool_result.result.dump() << "\n";
-    }
-  } else {
-    std::cout << "❌ Request failed: " << result.error_message() << "\n";
-  }
-}
-
-void test_anthropic_tools() {
-  std::cout << "\n=== Testing Anthropic Tool Integration ===\n";
-
-  auto client = ai::anthropic::create_client();
-
-  // Create a simple tool
-  ai::ToolSet tools = {
-      {"test_tool", ai::create_simple_tool(
-                        "test_tool", "A simple test tool that echoes input",
-                        {{"input", "string"}}, simple_test_tool)}};
-
-  ai::GenerateOptions options;
-  options.model = ai::anthropic::models::kClaudeSonnet5;
-  options.prompt = "Please use the test_tool with input 'hello anthropic'";
-  options.tools = tools;
-  options.tool_choice =
-      ai::ToolChoice::specific("test_tool");  // Force tool usage
-  options.max_tokens = 100;
-
-  std::cout << "Making request to Anthropic with forced tool usage...\n";
 
   auto result = client.generate_text(options);
 
@@ -188,9 +142,6 @@ int main() {
 
   // Test OpenAI integration
   test_openai_tools();
-
-  // Test Anthropic integration
-  test_anthropic_tools();
 
   // Test multi-step functionality
   test_multi_step();

@@ -38,10 +38,6 @@ constexpr const char* kGpt5Nano = "gpt-5-nano";
 constexpr const char* kGpt41 = "gpt-4.1";
 constexpr const char* kGpt41Mini = "gpt-4.1-mini";
 
-// Embeddings
-constexpr const char* kTextEmbedding3Small = "text-embedding-3-small";
-constexpr const char* kTextEmbedding3Large = "text-embedding-3-large";
-
 /// Default model used when none is specified
 constexpr const char* kDefaultModel = kGpt56;
 

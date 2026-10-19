@@ -39,7 +39,6 @@ add_ai_example(retry_config_example retry_config_example.cpp)
 
 # Simple test examples
 add_ai_example(test_openai test_openai.cpp)
-add_ai_example(test_anthropic test_anthropic.cpp)
 
 # OpenRouter example (OpenAI-compatible)
 add_ai_example(openrouter_example openrouter_example.cpp)
@@ -50,15 +49,9 @@ add_ai_example(tool_calling_multistep tool_calling_multistep.cpp)
 add_ai_example(tool_calling_async tool_calling_async.cpp)
 add_ai_example(test_tool_integration test_tool_integration.cpp)
 
-# Embeddings example
-add_ai_example(embeddings_example embeddings_example.cpp)
-
-# Langfuse tracing example
-add_ai_example(langfuse_tracing langfuse_tracing.cpp)
 
 # Component-specific examples
 add_subdirectory(components/openai)
-add_subdirectory(components/anthropic) 
 add_subdirectory(components/all)
 
 # Message to show how to run examples
@@ -70,16 +63,14 @@ endif()
 
 message(STATUS "Examples will be built in: ${CMAKE_BINARY_DIR}/examples/")
 message(STATUS "To run examples:")
-message(STATUS "  Set environment variables: OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY")
+message(STATUS "  Set environment variables: OPENAI_API_KEY, OPENROUTER_API_KEY")
 message(STATUS "  Run: ./examples/basic_chat${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "       ./examples/streaming_chat${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "       ./examples/multi_provider${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "       ./examples/error_handling${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "       ./examples/test_openai${EXAMPLE_DISPLAY_SUFFIX}")
-message(STATUS "       ./examples/test_anthropic${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "       ./examples/openrouter_example${EXAMPLE_DISPLAY_SUFFIX}")
 message(STATUS "")
 message(STATUS "Component-specific examples:")
 message(STATUS "  ./examples/components/openai/openai_component_demo     (OpenAI + Core only)")
-message(STATUS "  ./examples/components/anthropic/anthropic_component_demo (Anthropic + Core only)")
 message(STATUS "  ./examples/components/all/all_components_demo          (All components)")

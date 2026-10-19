@@ -3,14 +3,13 @@
  *
  * This example demonstrates using multiple AI providers with the same API.
  * It shows how to:
- * - Compare responses from different providers
+ * - Compare responses from different models
  * - Use provider-specific models
  * - Handle provider-specific errors
  * - Benchmark response times and token usage
  *
  * Usage:
  *   export OPENAI_API_KEY=your_openai_key
- *   export ANTHROPIC_API_KEY=your_anthropic_key
  *   ./multi_provider
  */
 
@@ -38,8 +37,6 @@ ProviderResult test_provider(const std::string& provider_name,
   ai::Client client;
   if (provider_name == "OpenAI") {
     client = ai::openai::create_client();
-  } else if (provider_name == "Anthropic") {
-    client = ai::anthropic::create_client();
   } else {
     return {provider_name, model, ai::GenerateResult("Unknown provider"),
             std::chrono::milliseconds(0), false};
@@ -92,12 +89,6 @@ int main() {
   results1.push_back(test_provider("OpenAI", ai::openai::models::kGpt56Terra,
                                    simple_question));
 
-  // Test Anthropic models
-  results1.push_back(test_provider(
-      "Anthropic", ai::anthropic::models::kClaudeSonnet5, simple_question));
-  results1.push_back(test_provider(
-      "Anthropic", ai::anthropic::models::kClaudeHaiku45, simple_question));
-
   for (const auto& result : results1) {
     print_result(result);
   }
@@ -114,11 +105,9 @@ int main() {
 
   std::vector<ProviderResult> results2;
 
-  // Test with different providers for creativity
+  // Test with different models for creativity
   results2.push_back(
       test_provider("OpenAI", ai::openai::models::kGpt56, creative_prompt));
-  results2.push_back(test_provider(
-      "Anthropic", ai::anthropic::models::kClaudeSonnet5, creative_prompt));
 
   for (const auto& result : results2) {
     print_result(result);
@@ -136,8 +125,6 @@ int main() {
 
   results3.push_back(
       test_provider("OpenAI", ai::openai::models::kGpt56, technical_prompt));
-  results3.push_back(test_provider(
-      "Anthropic", ai::anthropic::models::kClaudeSonnet5, technical_prompt));
 
   for (const auto& result : results3) {
     print_result(result);
@@ -203,13 +190,12 @@ int main() {
 
   std::cout << "\n";
 
-  // Test 5: Provider-specific client usage
-  std::cout << "Test 5: Using provider-specific clients\n\n";
+  // Test 5: Using the provider client directly
+  // Test 5: Using the OpenAI-compatible client directly
 
   // Create clients explicitly
   try {
     auto openai_client = ai::openai::create_client();
-    auto anthropic_client = ai::anthropic::create_client();
 
     if (openai_client.is_valid()) {
       std::cout << "OpenAI client created successfully\n";
@@ -230,13 +216,6 @@ int main() {
       std::cout << "Failed to create OpenAI client (check API key)\n";
     }
 
-    if (anthropic_client.is_valid()) {
-      std::cout << "Anthropic client created successfully\n";
-      std::cout << "Provider: " << anthropic_client.provider_name() << "\n";
-    } else {
-      std::cout << "Failed to create Anthropic client (check API key)\n";
-    }
-
   } catch (const ai::AIError& e) {
     std::cout << "Client creation error: " << e.what() << "\n";
   }
@@ -248,8 +227,8 @@ int main() {
   std::cout << "  - Token usage affects cost - consider model efficiency\n";
   std::cout << "  - The AI SDK provides a unified interface across providers\n";
   std::cout << "\nTip: Choose models based on your specific use case:\n";
-  std::cout << "  - Fast responses: GPT-5.4-mini, Claude-haiku-4.5\n";
-  std::cout << "  - High quality: GPT-5.5, Claude-sonnet-4.6\n";
+  std::cout << "  - Fast responses: GPT-5.4-mini, GPT-5-mini\n";
+  std::cout << "  - High quality: GPT-5.5, GPT-5.6\n";
   std::cout << "  - Creative tasks: Models with higher temperature settings\n";
 
   return 0;

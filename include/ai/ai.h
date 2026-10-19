@@ -8,10 +8,6 @@
 #include "openai.h"
 #endif
 
-#ifdef AI_SDK_HAS_ANTHROPIC
-#include "anthropic.h"
-#endif
-
 // Type definitions
 #include "types/client.h"
 #include "types/enums.h"
@@ -65,19 +61,6 @@
 ///     if (event.is_text_delta()) {
 ///         std::cout << event.text_delta << std::flush;
 ///     }
-/// }
-/// ```
-///
-/// Anthropic Integration:
-/// ```cpp
-/// auto client = ai::anthropic::create_client();
-/// ai::GenerateOptions options(ai::anthropic::models::kClaudeSonnet5,
-///                             "Explain quantum computing in simple terms.");
-/// options.system = "You are a helpful assistant.";
-/// auto result = client.generate_text(options);
-///
-/// if (result) {
-///     std::cout << result->text << std::endl;
 /// }
 /// ```
 namespace ai {}
