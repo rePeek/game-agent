@@ -15,6 +15,7 @@ target_sources(llm-context
     PRIVATE
         context.cpp
         session.cpp
+        ../agent.cpp
 )
 
 target_link_libraries(llm-context

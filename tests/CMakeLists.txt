@@ -39,6 +39,7 @@ endfunction()
 add_subdirectory(core)
 add_subdirectory(tools)
 add_subdirectory(context)
+add_subdirectory(agent)
 add_subdirectory(providers/openai)
 
 # Cross-component tests: Session + Context + the OpenAI provider, driven through
