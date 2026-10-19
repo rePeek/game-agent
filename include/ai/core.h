@@ -9,9 +9,6 @@
 #include "types/generate_options.h"
 #include "types/message.h"
 #include "types/model.h"
-#include "types/stream_event.h"
-#include "types/stream_options.h"
-#include "types/stream_result.h"
 #include "types/tool.h"
 #include "types/usage.h"
 

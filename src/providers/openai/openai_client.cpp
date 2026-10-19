@@ -4,7 +4,6 @@
 #include "ai/openai.h"
 #include "openai_request_builder.h"
 #include "openai_response_parser.h"
-#include "openai_stream.h"
 
 #include <algorithm>
 #include <memory>
@@ -46,34 +45,6 @@ OpenAIClient::OpenAIClient(const std::string& api_key,
   ai::logger::log_debug(
       "OpenAI client initialized with base_url: {} and custom retry config",
       base_url);
-}
-
-StreamResult OpenAIClient::stream_text(const StreamOptions& options) {
-  ai::logger::log_debug(
-      "Starting text streaming - model: {}, prompt length: {}", options.model,
-      options.prompt.length());
-
-  // Build request with stream: true
-  auto request_json = request_builder_->build_request_json(options);
-  request_json["stream"] = true;
-  // Request the terminal usage chunk; without this OpenAI omits usage from
-  // streaming responses and the finish event would never carry token counts.
-  request_json["stream_options"] = {{"include_usage", true}};
-  ai::logger::log_debug("Stream request JSON built with stream=true");
-
-  // Create headers
-  auto headers = request_builder_->build_headers(config_);
-  headers.emplace("Accept", "text/event-stream");
-
-  // Create stream implementation
-  auto impl = std::make_unique<OpenAIStreamImpl>();
-  impl->start_stream(config_.base_url + config_.completions_endpoint_path,
-                     headers, request_json);
-
-  ai::logger::log_info("Text streaming started - model: {}", options.model);
-
-  // Return StreamResult with implementation
-  return StreamResult(std::move(impl));
 }
 
 std::string OpenAIClient::provider_name() const {

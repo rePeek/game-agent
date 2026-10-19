@@ -4,7 +4,6 @@
 // Include the OpenAI client headers
 #include "ai/openai.h"
 #include "ai/types/generate_options.h"
-#include "ai/types/stream_options.h"
 
 // Include the real OpenAI client implementation for testing
 #include "providers/openai/openai_client.h"
@@ -193,19 +192,6 @@ TEST_F(OpenAIClientTest, NonReasoningModelsKeepSamplingParameters) {
 
   EXPECT_EQ(request["temperature"], 0.2);
   EXPECT_EQ(request["top_p"], 0.9);
-}
-
-// Stream Tests (Basic validation)
-TEST_F(OpenAIClientTest, StreamTextBasicValidation) {
-  auto options = StreamOptions(GenerateOptions(kTestModel, kTestPrompt));
-
-  // For now, just verify the call doesn't crash
-  // In a real test environment, this would fail due to network, but should
-  // handle gracefully
-  auto result = client_->stream_text(options);
-
-  // The stream result should be created even if the underlying request fails
-  EXPECT_TRUE(true);  // Just verify no crash occurred
 }
 
 // Internal Method Tests - These test the private implementation

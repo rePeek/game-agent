@@ -25,8 +25,6 @@ endfunction()
 # Basic chat example
 add_ai_example(basic_chat basic_chat.cpp)
 
-# Streaming chat example  
-add_ai_example(streaming_chat streaming_chat.cpp)
 
 # Multi-provider comparison
 add_ai_example(multi_provider multi_provider.cpp)
@@ -48,8 +46,6 @@ add_ai_example(tool_calling_basic tool_calling_basic.cpp)
 add_ai_example(tool_calling_multistep tool_calling_multistep.cpp)
 add_ai_example(tool_calling_async tool_calling_async.cpp)
 add_ai_example(test_tool_integration test_tool_integration.cpp)
-
-
 # Component-specific examples
 add_subdirectory(components/openai)
 add_subdirectory(components/all)

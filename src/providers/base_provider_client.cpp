@@ -136,14 +136,5 @@ GenerateResult BaseProviderClient::generate_text_single_step(
     return GenerateResult(std::string("Exception: ") + e.what());
   }
 }
-
-StreamResult BaseProviderClient::stream_text(const StreamOptions& options) {
-  (void)options;
-  // This needs to be implemented with provider-specific stream implementations
-  // For now, return an error
-  ai::logger::log_error("Streaming not yet implemented in BaseProviderClient");
-  return StreamResult();
-}
-
 }  // namespace providers
 }  // namespace ai

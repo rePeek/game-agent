@@ -110,41 +110,6 @@ void demonstrate_network_errors() {
   std::cout << "  - Connection pooling\n";
   std::cout << "  - Timeout management\n\n";
 }
-
-void demonstrate_streaming_errors() {
-  std::cout << "4. Streaming Error Handling\n";
-  std::cout << "===========================\n\n";
-
-  std::cout << "Testing streaming with invalid model:\n";
-
-  auto client = ai::openai::create_client();
-  ai::GenerateOptions gen_options;
-  gen_options.model = "invalid-streaming-model";
-  gen_options.prompt = "Tell me a story";
-  ai::StreamOptions stream_options(std::move(gen_options));
-  auto stream = client.stream_text(stream_options);
-
-  // Check for immediate errors
-  if (stream.has_error()) {
-    std::cout << "Stream error detected: " << stream.error_message() << "\n\n";
-  } else {
-    // Process stream and handle errors during iteration
-    for (const auto& event : stream) {
-      if (event.is_error()) {
-        std::cout << "Stream event error: " << event.error.value_or("Unknown")
-                  << "\n";
-        break;
-      } else if (event.is_text_delta()) {
-        std::cout << event.text_delta;
-      } else if (event.is_finish()) {
-        std::cout << "\nStream completed successfully\n";
-        break;
-      }
-    }
-    std::cout << "\n";
-  }
-}
-
 void demonstrate_exception_handling() {
   std::cout << "5. Exception Handling\n";
   std::cout << "=====================\n\n";
@@ -312,7 +277,6 @@ int main() {
   demonstrate_api_errors();
   demonstrate_validation();
   demonstrate_network_errors();
-  demonstrate_streaming_errors();
   demonstrate_exception_handling();
   demonstrate_recovery_patterns();
   demonstrate_logging();
@@ -328,9 +292,8 @@ int main() {
   std::cout
       << "  5. Log errors appropriately without exposing sensitive data\n";
   std::cout << "  6. Design graceful degradation for critical applications\n";
-  std::cout << "  7. Handle streaming errors during iteration\n";
   std::cout
-      << "  8. Use the SDK's built-in error types for specific handling\n";
+      << "  7. Use the SDK's built-in error types for specific handling\n";
 
   return 0;
 }

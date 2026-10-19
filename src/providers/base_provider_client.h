@@ -3,7 +3,6 @@
 #include "ai/retry/retry_policy.h"
 #include "ai/types/client.h"
 #include "ai/types/generate_options.h"
-#include "ai/types/stream_options.h"
 #include "http/http_request_handler.h"
 
 #include <memory>
@@ -55,7 +54,6 @@ class BaseProviderClient : public Client {
 
   // Implements the common flow using the composed components
   GenerateResult generate_text(const GenerateOptions& options) override;
-  StreamResult stream_text(const StreamOptions& options) override;
 
   bool is_valid() const override { return !config_.api_key.empty(); }
 

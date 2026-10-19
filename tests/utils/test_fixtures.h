@@ -35,7 +35,6 @@ class OpenAITestFixture : public AITestFixture {
   nlohmann::json createValidChatCompletionResponse();
   nlohmann::json createErrorResponse(int status_code,
                                      const std::string& message);
-  nlohmann::json createStreamResponse();
 
   // Message builders
   Messages createSampleConversation();
@@ -59,9 +58,6 @@ class TestDataGenerator {
 
   // Generate error scenarios
   static std::vector<std::pair<int, std::string>> errorScenarios();
-
-  // Generate streaming events
-  static std::vector<std::string> createStreamingEvents();
 
   // Edge case data
   static GenerateOptions createEdgeCaseOptions();

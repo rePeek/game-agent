@@ -3,7 +3,6 @@ add_executable(ai_tests
     # Unit tests
     unit/openai_client_test.cpp
     unit/types_test.cpp
-    unit/openai_stream_test.cpp
     unit/multi_step_coordinator_test.cpp
 
     # Integration tests
@@ -13,7 +12,6 @@ add_executable(ai_tests
     integration/multi_step_duplicate_execution_test.cpp
 
     # Utility classes
-    utils/mock_openai_client.cpp
     utils/test_fixtures.cpp
 )
 
@@ -22,7 +20,6 @@ target_link_libraries(ai_tests
     PRIVATE
         ai-sdk-cpp
         httplib::httplib  # Need direct access to httplib for internal headers
-        concurrentqueue   # Need direct access to concurrentqueue
         GTest::gtest
         GTest::gtest_main
         GTest::gmock
@@ -56,7 +53,6 @@ target_compile_definitions(ai_tests PRIVATE
     # httplib configuration (must match main library)
     CPPHTTPLIB_OPENSSL_SUPPORT=1
     CPPHTTPLIB_ZLIB_SUPPORT=1
-    CPPHTTPLIB_THREAD_POOL_COUNT=8
 )
 
 # Discover tests for CTest

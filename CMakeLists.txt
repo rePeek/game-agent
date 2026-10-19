@@ -38,7 +38,6 @@ endfunction()
 set(HTTPLIB_COMPILE_DEFS
     CPPHTTPLIB_OPENSSL_SUPPORT=1
     CPPHTTPLIB_ZLIB_SUPPORT=1
-    CPPHTTPLIB_THREAD_POOL_COUNT=8
 )
 
 # Create libraries
@@ -72,14 +71,11 @@ target_sources(ai-sdk-cpp-core
     PRIVATE
         # Type implementations
         src/types/generate_options.cpp
-        src/types/stream_options.cpp
-        src/types/stream_result.cpp
         src/types/message.cpp
         
         # HTTP and base provider infrastructure
         src/http/http_request_handler.cpp
         src/providers/base_provider_client.cpp
-        src/providers/http_sse_stream.cpp
         
         # Tool calling implementations
         src/tools/tool_executor.cpp
@@ -92,7 +88,6 @@ target_sources(ai-sdk-cpp-openai
         src/providers/openai/openai_client.cpp
         src/providers/openai/openai_request_builder.cpp
         src/providers/openai/openai_response_parser.cpp
-        src/providers/openai/openai_stream.cpp
         src/providers/openai/openai_factory.cpp
 )
 
@@ -104,7 +99,6 @@ target_link_libraries(ai-sdk-cpp-core
         $<BUILD_INTERFACE:httplib::httplib>
         $<BUILD_INTERFACE:OpenSSL::SSL>
         $<BUILD_INTERFACE:OpenSSL::Crypto>
-        $<BUILD_INTERFACE:concurrentqueue>
         $<INSTALL_INTERFACE:OpenSSL::SSL>
         $<INSTALL_INTERFACE:OpenSSL::Crypto>
         $<INSTALL_INTERFACE:ZLIB::ZLIB>
@@ -119,7 +113,6 @@ foreach(provider openai)
             nlohmann_json::nlohmann_json
         PRIVATE
             $<BUILD_INTERFACE:httplib::httplib>
-            $<BUILD_INTERFACE:concurrentqueue>
             $<INSTALL_INTERFACE:OpenSSL::SSL>
             $<INSTALL_INTERFACE:OpenSSL::Crypto>
             $<INSTALL_INTERFACE:ZLIB::ZLIB>

@@ -65,17 +65,6 @@ nlohmann::json OpenAITestFixture::createErrorResponse(
                           {"code", nullptr}}}};
 }
 
-nlohmann::json OpenAITestFixture::createStreamResponse() {
-  return nlohmann::json{
-      {"id", "chatcmpl-stream123"},
-      {"object", "chat.completion.chunk"},
-      {"created", 1234567890},
-      {"model", kTestModel},
-      {"choices", nlohmann::json::array({{{"index", 0},
-                                          {"delta", {{"content", "Hello"}}},
-                                          {"finish_reason", nullptr}}})}};
-}
-
 Messages OpenAITestFixture::createSampleConversation() {
   return {createSystemMessage("You are a helpful assistant."),
           createUserMessage("Hello!"),
@@ -177,26 +166,6 @@ std::vector<std::pair<int, std::string>> TestDataGenerator::errorScenarios() {
           {500, "Internal server error"},
           {502, "Bad gateway"},
           {503, "Service unavailable"}};
-}
-
-std::vector<std::string> TestDataGenerator::createStreamingEvents() {
-  return {
-      "data: "
-      "{\"id\":\"chatcmpl-stream1\",\"object\":\"chat.completion.chunk\","
-      "\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":"
-      "0,"
-      "\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n",
-      "data: "
-      "{\"id\":\"chatcmpl-stream1\",\"object\":\"chat.completion.chunk\","
-      "\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":"
-      "0,"
-      "\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\n",
-      "data: "
-      "{\"id\":\"chatcmpl-stream1\",\"object\":\"chat.completion.chunk\","
-      "\"created\":1234567890,\"model\":\"test-model\",\"choices\":[{\"index\":"
-      "0,"
-      "\"delta\":{\"content\":\"!\"},\"finish_reason\":\"stop\"}]}\n\n",
-      "data: [DONE]\n\n"};
 }
 
 GenerateOptions TestDataGenerator::createEdgeCaseOptions() {

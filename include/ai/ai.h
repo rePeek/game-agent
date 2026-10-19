@@ -14,9 +14,6 @@
 #include "types/generate_options.h"
 #include "types/message.h"
 #include "types/model.h"
-#include "types/stream_event.h"
-#include "types/stream_options.h"
-#include "types/stream_result.h"
 #include "types/tool.h"
 #include "types/usage.h"
 
@@ -45,22 +42,6 @@
 ///
 /// if (result) {
 ///     std::cout << result->text << std::endl;
-/// }
-/// ```
-///
-/// Streaming text generation:
-/// ```cpp
-/// auto client = ai::openai::create_client();
-///
-/// ai::GenerateOptions options(ai::openai::models::kGpt56,
-///                             "Write a short story about a robot.");
-/// options.system = "You are a helpful assistant.";
-/// auto stream = client.stream_text(ai::StreamOptions(options));
-///
-/// for (const auto& event : stream) {
-///     if (event.is_text_delta()) {
-///         std::cout << event.text_delta << std::flush;
-///     }
 /// }
 /// ```
 namespace ai {}

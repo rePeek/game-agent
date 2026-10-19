@@ -1,8 +1,6 @@
 #pragma once
 
 #include "generate_options.h"
-#include "stream_options.h"
-#include "stream_result.h"
 
 #include <memory>
 #include <string>
@@ -29,12 +27,6 @@ class Client {
     if (pimpl_)
       return pimpl_->generate_text(options);
     return GenerateResult("Client not initialized");
-  }
-
-  virtual StreamResult stream_text(const StreamOptions& options) {
-    if (pimpl_)
-      return pimpl_->stream_text(options);
-    return StreamResult();
   }
 
   virtual bool is_valid() const {

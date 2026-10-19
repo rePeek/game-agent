@@ -15,15 +15,4 @@ enum FinishReason {
   kFinishReasonToolCalls,
   kFinishReasonError
 };
-
-enum StreamEventType {
-  kStreamEventTypeTextDelta,
-  kStreamEventTypeToolCall,
-  kStreamEventTypeToolResult,
-  kStreamEventTypeStepStart,
-  kStreamEventTypeStepFinish,
-  kStreamEventTypeFinish,
-  kStreamEventTypeError
-};
-
 }  // namespace ai

@@ -51,32 +51,6 @@ int main() {
       std::cout << "Error: " << result.error_message() << "\n";
       return 1;
     }
-
-    // Test streaming with OpenRouter
-    std::cout << "\n\nTesting streaming with OpenRouter...\n";
-
-    ai::GenerateOptions stream_opts("anthropic/claude-sonnet-5",
-                                    "You are a creative writer.",
-                                    "Write a haiku about API compatibility.");
-    ai::StreamOptions stream_options(stream_opts);
-
-    auto stream = client.stream_text(stream_options);
-
-    std::cout << "Haiku:\n";
-    for (const auto& event : stream) {
-      if (event.is_text_delta()) {
-        std::cout << event.text_delta << std::flush;
-      } else if (event.is_error()) {
-        std::cout << "\nStream error: " << event.error.value_or("unknown")
-                  << "\n";
-      } else if (event.is_finish()) {
-        std::cout << "\n\nStream finished.\n";
-        if (event.usage.has_value()) {
-          std::cout << "Total tokens: " << event.usage->total_tokens << "\n";
-        }
-      }
-    }
-
     std::cout << "\n=== Example completed successfully ===\n";
     std::cout << "\nNote: You can use any model available on OpenRouter.\n";
     std::cout << "Visit https://openrouter.ai/models for the full list.\n";

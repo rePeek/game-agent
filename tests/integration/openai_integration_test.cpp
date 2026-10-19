@@ -1,7 +1,6 @@
 #include "../utils/test_fixtures.h"
 #include "ai/openai.h"
 #include "ai/types/generate_options.h"
-#include "ai/types/stream_options.h"
 
 #include <future>
 #include <optional>
@@ -207,38 +206,6 @@ TEST_F(OpenAIIntegrationTest, RateLimitHandling) {
     // Normal case - request succeeded
     TestAssertions::assertSuccess(result);
   }
-}
-
-// Streaming Tests
-TEST_F(OpenAIIntegrationTest, BasicStreaming) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No OPENAI_API_KEY environment variable set";
-  }
-
-  GenerateOptions gen_options(ai::openai::models::kGpt56Luna,
-                              "Count from 1 to 3");
-  StreamOptions options(gen_options);
-  auto stream = client_->stream_text(options);
-
-  bool received_text = false;
-  bool stream_finished = false;
-  std::string accumulated_text;
-
-  for (const auto& event : stream) {
-    if (event.is_text_delta()) {
-      received_text = true;
-      accumulated_text += event.text_delta;
-    } else if (event.is_finish()) {
-      stream_finished = true;
-      break;
-    } else if (event.is_error()) {
-      FAIL() << "Streaming error: " << event.error.value_or("unknown");
-    }
-  }
-
-  EXPECT_TRUE(received_text) << "Should have received text deltas";
-  EXPECT_TRUE(stream_finished) << "Stream should have finished";
-  EXPECT_FALSE(accumulated_text.empty()) << "Should have accumulated some text";
 }
 
 // Performance Tests
@@ -458,39 +425,5 @@ TEST_F(OpenAIIntegrationTest, DefaultModelGeneration) {
                 std::string::npos);
   }
 }
-
-TEST_F(OpenAIIntegrationTest, DefaultModelStreaming) {
-  if (!use_real_api_) {
-    GTEST_SKIP() << "No OPENAI_API_KEY environment variable set";
-  }
-
-  // Test stream_text using default_model()
-  GenerateOptions gen_options(client_->default_model(), "Count from 1 to 3");
-  gen_options.max_tokens = 50;
-  StreamOptions options(gen_options);
-
-  auto stream = client_->stream_text(options);
-
-  bool received_text = false;
-  bool stream_finished = false;
-  std::string accumulated_text;
-
-  for (const auto& event : stream) {
-    if (event.is_text_delta()) {
-      received_text = true;
-      accumulated_text += event.text_delta;
-    } else if (event.is_finish()) {
-      stream_finished = true;
-      break;
-    } else if (event.is_error()) {
-      FAIL() << "Streaming error: " << event.error.value_or("unknown");
-    }
-  }
-
-  EXPECT_TRUE(received_text) << "Should have received text deltas";
-  EXPECT_TRUE(stream_finished) << "Stream should have finished";
-  EXPECT_FALSE(accumulated_text.empty()) << "Should have accumulated some text";
-}
-
 }  // namespace test
 }  // namespace ai

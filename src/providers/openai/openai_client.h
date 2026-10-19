@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ai/retry/retry_policy.h"
-#include "ai/types/stream_options.h"
 #include "providers/base_provider_client.h"
 
 #include <string>
@@ -20,7 +19,6 @@ class OpenAIClient : public providers::BaseProviderClient {
                         const retry::RetryConfig& retry_config);
 
   // Override only what's specific to OpenAI
-  StreamResult stream_text(const StreamOptions& options) override;
   std::string provider_name() const override;
   std::vector<std::string> supported_models() const override;
   bool supports_model(const std::string& model_name) const override;

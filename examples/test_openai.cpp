@@ -30,34 +30,6 @@ int main() {
     } else {
       std::cout << "Error: " << result.error_message() << "\n";
     }
-
-    // Test streaming
-    std::cout << "\nTesting streaming...\n";
-
-    ai::GenerateOptions stream_opts(
-        ai::openai::models::kGpt56Terra,
-        "Count from 1 to 5 slowly and along with each number say 'tick'");
-    ai::StreamOptions stream_options(stream_opts);
-
-    auto stream = client.stream_text(stream_options);
-
-    for (const auto& event : stream) {
-      if (event.is_text_delta()) {
-        std::cout << event.text_delta << std::flush;
-      } else if (event.is_error()) {
-        std::cout << "\nStream error: " << event.error.value_or("unknown")
-                  << "\n";
-      } else if (event.is_finish()) {
-        std::cout << "\n\nStream finished.\n";
-        if (event.usage.has_value()) {
-          std::cout << "Total tokens: " << event.usage->total_tokens << "\n";
-        } else {
-          std::cout << "Note: Token usage data is not available in OpenAI's "
-                       "streaming mode.\n";
-        }
-      }
-    }
-
   } catch (const std::exception& e) {
     std::cerr << "Exception: " << e.what() << "\n";
     return 1;
