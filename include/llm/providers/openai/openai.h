@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llm/core/logger.h"
 #include "llm/core/provider.h"
 #include "llm/core/types.h"
 #include "llm/providers/openai/transport.h"
@@ -96,6 +97,10 @@ struct ProviderOptions {
   /// add its own policy (for example a per-game allowed tool list) without
   /// touching the provider.
   std::shared_ptr<const ToolCallValidator> validator;
+
+  /// Optional diagnostics sink; the same logger can be shared with the
+  /// sessions using this provider. Without it the provider stays silent.
+  std::shared_ptr<ILogger> logger;
 };
 
 /// OpenAI-compatible Chat Completions provider.

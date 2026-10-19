@@ -140,7 +140,19 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   CompletionResult result;
   result.model = request.model;
 
+  // Events are emitted with the request's diagnostics context, so a shared
+  // provider can be attributed to the session that caused the call.
+  const std::shared_ptr<ILogger> logger = options_.logger;
+  const LogContext log_context = request.log;
+  const auto log = [&logger, &log_context](LogLevel level,
+                                           std::string_view event,
+                                           std::string message) {
+    EmitLog(logger, level, event, std::move(message), log_context);
+  };
+
   if (options_.api_key.empty()) {
+    log(LogLevel::Error, log_event::kRequestFailed,
+        "kind=auth, attempts=0, message=no API key configured");
     return ProviderErrorResult(
         request, MakeError(ErrorKind::Auth,
                            "no API key configured for the OpenAI provider"));
@@ -152,6 +164,8 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
       CheckCapabilities(request, options_.capabilities);
   if (!unenforceable.empty()) {
     if (!options_.allow_validation_downgrade) {
+      log(LogLevel::Error, log_event::kRequestFailed,
+          "kind=unsupported, attempts=0, message=" + unenforceable);
       result.status = CompletionStatus::Unsupported;
       result.error = MakeError(ErrorKind::Unsupported, unenforceable);
       return result;
@@ -160,6 +174,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
         "provider-side guarantee downgraded to SDK-side "
         "validation: " +
         unenforceable);
+    log(LogLevel::Warning, log_event::kRequirementDowngraded, unenforceable);
   }
 
   // 2. Build the request. A malformed request is the caller's error and is
@@ -167,6 +182,8 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   detail::BuildOutcome built =
       detail::BuildChatCompletionRequest(request, options_.parameter_dialect);
   if (!built.ok) {
+    log(LogLevel::Error, log_event::kRequestFailed,
+        "kind=invalid request, attempts=0, message=" + built.error);
     return ProviderErrorResult(
         request, MakeError(ErrorKind::InvalidRequest, built.error));
   }
@@ -178,6 +195,9 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     const ValidationReport schemas =
         options_.validator->ValidateToolSchemas(request);
     if (!schemas.ok) {
+      log(LogLevel::Warning, log_event::kValidationFailed,
+          "the request uses a tool schema that cannot be enforced: " +
+              schemas.Summary());
       result.status = CompletionStatus::Unsupported;
       result.error =
           MakeError(ErrorKind::Unsupported,
@@ -201,6 +221,12 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     http.headers.push_back(header);
   }
 
+  log(LogLevel::Debug, log_event::kRequestStarted,
+      "model=" + request.model +
+          ", tools=" + std::to_string(request.tools.size()) +
+          ", tool_choice=" + request.tool_choice.ToString() +
+          ", messages=" + std::to_string(request.messages.size()));
+
   // 4. One completion, one (possibly retried) HTTP request.
   const int max_attempts = std::max(1, options_.retry.max_attempts);
   int delay_ms = std::max(0, options_.retry.initial_delay_ms);
@@ -216,6 +242,11 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     if (succeeded || !retryable || attempt >= max_attempts) {
       break;
     }
+    log(LogLevel::Warning, log_event::kRequestRetry,
+        "attempt=" + std::to_string(attempt) +
+            ", http=" + std::to_string(response.status) +
+            ", kind=" + ToString(ClassifyStatus(response.status)) +
+            ", next_delay_ms=" + std::to_string(delay_ms));
     if (delay_ms > 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
       delay_ms = static_cast<int>(std::min(
@@ -239,6 +270,10 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
                                                ? std::string("unknown error")
                                                : response.error),
                   0, true, response.body);
+    log(LogLevel::Error, log_event::kRequestFailed,
+        "kind=" + ToString(result.error->kind) +
+            ", http=0, attempts=" + std::to_string(attempts_made) +
+            ", message=" + result.error->message);
     return result;
   }
   if (!response.IsSuccess()) {
@@ -247,6 +282,11 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
         MakeError(ClassifyStatus(response.status),
                   detail::ExtractErrorMessage(response.body), response.status,
                   IsRetryableStatus(response.status), response.body);
+    log(LogLevel::Error, log_event::kRequestFailed,
+        "kind=" + ToString(result.error->kind) +
+            ", http=" + std::to_string(response.status) +
+            ", attempts=" + std::to_string(attempts_made) +
+            ", message=" + result.error->message);
     return result;
   }
 
@@ -256,6 +296,9 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     result.status = CompletionStatus::ProviderError;
     result.error = MakeError(ErrorKind::Parse, parsed.error, response.status,
                              false, response.body);
+    log(LogLevel::Error, log_event::kRequestFailed,
+        "kind=parse, http=" + std::to_string(response.status) + ", attempts=" +
+            std::to_string(attempts_made) + ", message=" + parsed.error);
     return result;
   }
 
@@ -267,31 +310,26 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
   result.assistant_text = parsed.assistant_text;
   result.tool_calls = parsed.tool_calls;
 
-  // 6. Decide the status the caller branches on.
+  // 6. Decide the status the caller branches on. One exit, so the completion
+  //    is logged once with the status the caller actually receives.
   if (!parsed.refusal.empty()) {
     result.status = CompletionStatus::Refused;
     result.error =
         MakeError(ErrorKind::InvalidRequest, parsed.refusal, response.status);
-    return result;
-  }
-  if (result.finish_reason == FinishReason::Length) {
+  } else if (result.finish_reason == FinishReason::Length) {
     result.status = CompletionStatus::Truncated;
     result.error = MakeError(
         ErrorKind::InvalidRequest,
         "completion was cut off by the token limit before the tool calls were "
         "complete",
         response.status);
-    return result;
-  }
-  if (result.finish_reason == FinishReason::ContentFilter) {
+  } else if (result.finish_reason == FinishReason::ContentFilter) {
     result.status = CompletionStatus::Refused;
     result.error = MakeError(ErrorKind::InvalidRequest,
                              "completion was blocked by the provider's content "
                              "filter",
                              response.status);
-    return result;
-  }
-  if (result.tool_calls.empty()) {
+  } else if (result.tool_calls.empty()) {
     result.status = CompletionStatus::NoToolCalls;
     result.error = MakeError(
         ErrorKind::InvalidRequest,
@@ -299,23 +337,33 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
             ? "completion contained no tool calls"
             : "completion contained no tool calls: " + parsed.assistant_text,
         response.status);
-    return result;
+  } else {
+    // The batch must pass every check the SDK promises: known tools, ids,
+    // parseable arguments and a matching parameter schema.
+    const ValidationReport report =
+        options_.validator->Validate(request, result.tool_calls);
+    if (!report.ok) {
+      log(LogLevel::Warning, log_event::kValidationFailed, report.Summary());
+      result.status = report.HasSchemaIssues()
+                          ? CompletionStatus::Unsupported
+                          : CompletionStatus::InvalidToolCalls;
+      result.error = MakeError(ErrorKind::InvalidRequest, report.Summary(),
+                               response.status);
+    } else {
+      result.status = CompletionStatus::Success;
+    }
   }
 
-  // The batch must pass every check the SDK promises: known tools, ids,
-  // parseable arguments and a matching parameter schema.
-  const ValidationReport report =
-      options_.validator->Validate(request, result.tool_calls);
-  if (!report.ok) {
-    result.status = report.HasSchemaIssues()
-                        ? CompletionStatus::Unsupported
-                        : CompletionStatus::InvalidToolCalls;
-    result.error =
-        MakeError(ErrorKind::InvalidRequest, report.Summary(), response.status);
-    return result;
-  }
-
-  result.status = CompletionStatus::Success;
+  log(result.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
+      log_event::kRequestCompleted,
+      "status=" + ToString(result.status) +
+          ", http=" + std::to_string(response.status) +
+          ", attempts=" + std::to_string(attempts_made) +
+          ", tokens=" + std::to_string(result.usage.total_tokens) +
+          ", tools=" + std::to_string(result.tool_calls.size()) +
+          ", finish_reason=" + ToString(result.finish_reason) +
+          (result.IsSuccess() ? std::string()
+                              : ", message=" + result.ErrorMessage()));
   return result;
 }
 

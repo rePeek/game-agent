@@ -78,6 +78,10 @@ inline constexpr std::string_view kDecisionRecorded =
     "session.decision_recorded";
 inline constexpr std::string_view kDecisionDiscarded =
     "session.decision_discarded";
+/// Tool results were reported for a decision that is not awaiting them, or
+/// they did not cover every tool call.
+inline constexpr std::string_view kDecisionRecordRejected =
+    "session.decision_record_rejected";
 
 // Provider lifecycle.
 inline constexpr std::string_view kRequestStarted = "provider.request_started";
@@ -85,6 +89,10 @@ inline constexpr std::string_view kRequestRetry = "provider.retry";
 inline constexpr std::string_view kRequestCompleted =
     "provider.request_completed";
 inline constexpr std::string_view kRequestFailed = "provider.request_failed";
+/// The request needed a guarantee the provider cannot make; the caller allowed
+/// the SDK to validate instead.
+inline constexpr std::string_view kRequirementDowngraded =
+    "provider.requirement_downgraded";
 
 // Validation.
 inline constexpr std::string_view kValidationFailed = "tools.validation_failed";

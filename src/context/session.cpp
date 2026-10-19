@@ -32,8 +32,13 @@ struct Session::State {
   std::string model;
   std::optional<std::int32_t> max_tokens;
   std::optional<std::size_t> max_tool_calls;
+  std::shared_ptr<ILogger> logger;
+  std::string session_id;
   bool closed = false;
   std::uint64_t next_decision_id = 1;
+  /// Diagnostics id for each accepted decision attempt; it travels with the
+  /// request so provider events can be attributed to it.
+  std::uint64_t next_request_id = 1;
 
   /// Revision of the decision currently being asked about, if any.
   std::optional<std::string> in_flight_revision;
@@ -110,6 +115,7 @@ DecisionResult Refused(DecisionStatus status,
 struct Session::Attempt {
   bool started = false;
   std::string context_revision;
+  std::uint64_t request_id = 0;
   ModelRequest request;
   DecisionResult refusal;  // valid when !started
 };
@@ -121,6 +127,14 @@ Session::Session(std::shared_ptr<IModelProvider> provider, SessionConfig config)
   state_->model = std::move(config.model);
   state_->max_tokens = config.max_tokens;
   state_->max_tool_calls = config.max_tool_calls;
+  state_->logger = std::move(config.logger);
+  state_->session_id = std::move(config.session_id);
+
+  EmitLog(state_->logger, LogLevel::Info, log_event::kSessionCreated,
+          "model=" + state_->model + ", max_messages=" +
+              std::to_string(state_->context.config().max_messages) +
+              ", session=" + state_->session_id,
+          LogContext{state_->session_id, 0});
   if (!state_->system_prompt.empty()) {
     state_->context.SetSystemPrompt(state_->system_prompt);
   }
@@ -176,31 +190,49 @@ Context Session::ContextSnapshot() const {
 
 Session::Attempt Session::BeginAttempt(ContextUpdate update) {
   Attempt attempt;
-  std::lock_guard<std::mutex> lock(state_->mutex);
+  const std::shared_ptr<ILogger> logger = state_->logger;
+  const std::string session_id = state_->session_id;
 
-  if (state_->closed) {
-    attempt.refusal =
-        Refused(DecisionStatus::Closed, state_->context.context_revision(),
-                "session is closed");
-    return attempt;
-  }
-  if (state_->in_flight_revision.has_value() || !state_->pending.empty()) {
-    attempt.refusal =
-        Refused(DecisionStatus::Busy, state_->context.context_revision(),
-                state_->in_flight_revision.has_value()
-                    ? "a decision is already in flight"
-                    : "a decision is still awaiting tool results; call "
-                      "RecordToolResults or DiscardDecision first");
-    return attempt;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+
+    if (state_->closed) {
+      attempt.refusal =
+          Refused(DecisionStatus::Closed, state_->context.context_revision(),
+                  "session is closed");
+    } else if (state_->in_flight_revision.has_value() ||
+               !state_->pending.empty()) {
+      attempt.refusal =
+          Refused(DecisionStatus::Busy, state_->context.context_revision(),
+                  state_->in_flight_revision.has_value()
+                      ? "a decision is already in flight"
+                      : "a decision is still awaiting tool results; call "
+                        "RecordToolResults or DiscardDecision first");
+    } else {
+      state_->context.SetContextUpdate(std::move(update));
+      attempt.started = true;
+      attempt.context_revision = state_->context.context_revision();
+      attempt.request_id = state_->next_request_id++;
+      attempt.request = state_->context.BuildRequest(state_->model);
+      attempt.request.max_tokens = state_->max_tokens;
+      attempt.request.max_tool_calls = state_->max_tool_calls;
+      attempt.request.log = LogContext{state_->session_id, attempt.request_id};
+      state_->in_flight_revision = attempt.context_revision;
+    }
   }
 
-  state_->context.SetContextUpdate(std::move(update));
-  attempt.started = true;
-  attempt.context_revision = state_->context.context_revision();
-  attempt.request = state_->context.BuildRequest(state_->model);
-  attempt.request.max_tokens = state_->max_tokens;
-  attempt.request.max_tool_calls = state_->max_tool_calls;
-  state_->in_flight_revision = attempt.context_revision;
+  // Emitted outside the lock: a logger may call back into the session.
+  if (attempt.started) {
+    EmitLog(logger, LogLevel::Debug, log_event::kDecisionStarted,
+            "rev=" + attempt.context_revision +
+                ", tools=" + std::to_string(attempt.request.tools.size()) +
+                ", messages=" + std::to_string(attempt.request.messages.size()),
+            attempt.request.log);
+  } else {
+    EmitLog(logger, LogLevel::Warning, log_event::kDecisionRejected,
+            attempt.refusal.completion.ErrorMessage(),
+            LogContext{session_id, 0});
+  }
   return attempt;
 }
 
@@ -208,6 +240,8 @@ DecisionResult Session::FinishAttempt(const std::shared_ptr<State>& state,
                                       const Attempt& attempt,
                                       CompletionResult completion) {
   DecisionResult result;
+  const std::shared_ptr<ILogger> logger = state->logger;
+  const LogContext context{state->session_id, attempt.request_id};
   result.context_revision = attempt.context_revision;
   result.status = DecisionStatus::Completed;
   result.completion = std::move(completion);
@@ -217,22 +251,32 @@ DecisionResult Session::FinishAttempt(const std::shared_ptr<State>& state,
   state->idle_cv.notify_all();
 
   if (state->closed) {
-    return Refused(DecisionStatus::Closed, attempt.context_revision,
-                   "session was closed while the decision was in flight");
-  }
-  if (!result.completion.IsSuccess()) {
-    return result;  // nothing to confirm, nothing to record
+    result = Refused(DecisionStatus::Closed, attempt.context_revision,
+                     "session was closed while the decision was in flight");
+  } else if (result.completion.IsSuccess()) {
+    State::Pending pending;
+    pending.decision_id = state->next_decision_id++;
+    pending.context_revision = attempt.context_revision;
+    pending.assistant = result.completion.ToAssistantMessage();
+    for (const ToolCall& call : result.completion.tool_calls) {
+      pending.tool_call_ids.push_back(call.id);
+    }
+    result.decision_id = pending.decision_id;
+    state->pending.push_back(std::move(pending));
   }
 
-  State::Pending pending;
-  pending.decision_id = state->next_decision_id++;
-  pending.context_revision = attempt.context_revision;
-  pending.assistant = result.completion.ToAssistantMessage();
-  for (const ToolCall& call : result.completion.tool_calls) {
-    pending.tool_call_ids.push_back(call.id);
-  }
-  result.decision_id = pending.decision_id;
-  state->pending.push_back(std::move(pending));
+  // Emitted outside the lock.
+  EmitLog(
+      logger,
+      result.completion.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
+      log_event::kDecisionCompleted,
+      "status=" + ToString(result.completion.status) +
+          ", tools=" + std::to_string(result.completion.tool_calls.size()) +
+          ", tokens=" + std::to_string(result.completion.usage.total_tokens) +
+          ", attempts=" + std::to_string(result.completion.http_attempts) +
+          ", decision_id=" + std::to_string(result.decision_id) +
+          ", model=" + result.completion.model,
+      context);
   return result;
 }
 
@@ -306,13 +350,25 @@ void Session::RunWorker(std::shared_ptr<State> state) {
 
 RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
                                          std::vector<ToolResult> results) {
-  std::lock_guard<std::mutex> lock(state_->mutex);
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  const std::shared_ptr<ILogger> logger = state_->logger;
+  const std::string session_id = state_->session_id;
+
+  const auto reject = [&](const char* reason) {
+    lock.unlock();
+    EmitLog(logger, LogLevel::Warning, log_event::kDecisionRecordRejected,
+            std::string("decision_id=") + std::to_string(decision_id) + ", " +
+                reason,
+            LogContext{session_id, 0});
+  };
 
   if (state_->closed) {
+    reject("session is closed");
     return RecordOutcome::Closed;
   }
   const State::Pending* pending = state_->FindPendingLocked(decision_id);
   if (pending == nullptr) {
+    reject("no decision with that id is awaiting results");
     return RecordOutcome::UnknownDecision;
   }
 
@@ -341,6 +397,7 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
   DecisionRecord record;
   record.decision_id = pending->decision_id;
   record.context_revision = pending->context_revision;
+  const std::string record_revision = pending->context_revision;
   record.assistant = pending->assistant;
   record.tool_results = std::move(tool_messages);
   state_->context.AppendDecision(std::move(record));
@@ -351,11 +408,19 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
                      }),
       state_->pending.end());
   state_->idle_cv.notify_all();
+  lock.unlock();
+
+  EmitLog(logger, LogLevel::Info, log_event::kDecisionRecorded,
+          "decision_id=" + std::to_string(decision_id) + ", results=" +
+              std::to_string(results.size()) + ", rev=" + record_revision,
+          LogContext{session_id, 0});
   return RecordOutcome::Recorded;
 }
 
 bool Session::DiscardDecision(std::uint64_t decision_id) {
-  std::lock_guard<std::mutex> lock(state_->mutex);
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  const std::shared_ptr<ILogger> logger = state_->logger;
+  const std::string session_id = state_->session_id;
   const std::size_t before = state_->pending.size();
   state_->pending.erase(
       std::remove_if(state_->pending.begin(), state_->pending.end(),
@@ -366,6 +431,13 @@ bool Session::DiscardDecision(std::uint64_t decision_id) {
   const bool removed = state_->pending.size() != before;
   if (removed) {
     state_->idle_cv.notify_all();
+  }
+  lock.unlock();
+
+  if (removed) {
+    EmitLog(logger, LogLevel::Info, log_event::kDecisionDiscarded,
+            "decision_id=" + std::to_string(decision_id),
+            LogContext{session_id, 0});
   }
   return removed;
 }
@@ -414,8 +486,17 @@ bool Session::closed() const {
 }
 
 void Session::Close() {
-  std::lock_guard<std::mutex> lock(state_->mutex);
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  const bool was_open = !state_->closed;
   state_->closed = true;
+  const std::shared_ptr<ILogger> logger = state_->logger;
+  const std::string session_id = state_->session_id;
+  lock.unlock();
+
+  if (was_open) {
+    EmitLog(logger, LogLevel::Info, log_event::kSessionClosed,
+            "session=" + session_id, LogContext{session_id, 0});
+  }
 }
 
 std::shared_ptr<Session> CreateSession(std::shared_ptr<IModelProvider> provider,

@@ -18,6 +18,7 @@
 /// both are the application's call.
 
 #include "llm/context/context.h"
+#include "llm/core/logger.h"
 #include "llm/core/provider.h"
 #include "llm/core/request.h"
 #include "llm/core/result.h"
@@ -68,6 +69,15 @@ struct SessionConfig {
   /// bounded, and the tool-call bound is what the validator enforces.
   std::optional<std::int32_t> max_tokens;
   std::optional<std::size_t> max_tool_calls;
+
+  /// Optional diagnostics sink. Without it the session produces no log events
+  /// at all; the same logger can be shared by several sessions and by the
+  /// provider they use.
+  std::shared_ptr<ILogger> logger;
+
+  /// Identifies this decision stream in log records (for example "home" and
+  /// "away" when one provider serves both sides).
+  std::string session_id;
 };
 
 /// One coach, one side, one history. Independent Sessions share nothing.
