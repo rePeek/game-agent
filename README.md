@@ -207,8 +207,10 @@ Busy?"), `session.decision_record_rejected`, `session.closed`,
 `provider.request_failed`, `provider.requirement_downgraded` and
 `tools.validation_failed`.
 
-Every record carries `session_id` and the per-attempt `request_id`, so a
-provider shared by several agents can still be attributed:
+Every record carries `session_id` and the per-attempt `request_id`. Recording,
+discarding and rejecting a decision reuse the id of the attempt that produced
+it, so one decision is one correlation id from start to finish — which matters
+when a provider is shared by several agents:
 
 ```
 INFO  [home:1] session.decision_started: rev=rev-62, tools=3, messages=2
@@ -225,13 +227,21 @@ What the SDK guarantees, and what it deliberately leaves out:
   decision's outcome (dispatch swallows the exception);
 - the logger is never called while a session lock is held, so an
   implementation may call back into the session;
-- only metadata is logged — never prompts, API keys or raw responses;
+- only metadata is logged: classifications and counts (kind, status, HTTP code,
+  attempts, tokens, tool counts, schema summaries). Prompts, API keys, model
+  text and raw responses are never logged — they stay in `CompletionResult`,
+  where the caller can decide what to do with them;
 - events are per decision and per request, not per simulation tick;
 - logging is diagnostics only: `CompletionResult` and the session history stay
   authoritative.
 
-Test-side implementations live in `tests/support/`: `ConsoleLogger` for reading
-a run by hand and `CaptureLogger` for asserting on events.
+Test-side implementations live in `tests/support/`: `CaptureLogger` for
+asserting on events in unit tests, and `ConsoleLogger` for reading a run by
+hand:
+
+```bash
+ctest -R console_logger_demo -V        # prints a whole decision round
+```
 
 ## Feeding a previous decision back
 

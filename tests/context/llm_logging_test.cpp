@@ -135,6 +135,8 @@ TEST(LlmSessionLoggingTest, LifecycleEventsCarryTheSessionAndRequestId) {
   EXPECT_NE(records[2].message.find("tools=1"), std::string::npos);
   EXPECT_NE(records[2].message.find("tokens=15"), std::string::npos);
   EXPECT_NE(records[3].message.find("decision_id=1"), std::string::npos);
+  EXPECT_EQ(records[3].request_id, records[1].request_id)
+      << "recording a decision is correlated with the attempt that produced it";
   EXPECT_NE(records[0].message.find("home"), std::string::npos);
 }
 
@@ -194,6 +196,19 @@ TEST(LlmSessionLoggingTest, RecordRejectionsAreVisible) {
   EXPECT_NE(rejections[1].find("do not cover every tool call"),
             std::string::npos);
   EXPECT_FALSE(fixture.logger->Has(log_event::kDecisionRecorded));
+
+  // The rejection for a decision that exists is correlated with its attempt;
+  // an unknown id has no attempt to point at.
+  const std::vector<LogRecord> records = fixture.logger->Records();
+  std::vector<std::uint64_t> rejection_ids;
+  for (const LogRecord& record : records) {
+    if (record.event == log_event::kDecisionRecordRejected) {
+      rejection_ids.push_back(record.request_id);
+    }
+  }
+  ASSERT_EQ(rejection_ids.size(), 2u);
+  EXPECT_EQ(rejection_ids[0], 0u);
+  EXPECT_EQ(rejection_ids[1], 1u);
 }
 
 TEST(LlmSessionLoggingTest, ClosedSessionsAreVisibleAndStillRefuse) {

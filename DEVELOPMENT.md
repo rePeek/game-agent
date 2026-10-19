@@ -220,7 +220,9 @@ Each module has its own test binary, so the linker checks the module boundary:
   refused connection;
 - `tests/integration/` — `llm_integration_tests`: Session + Context + the
   OpenAI provider end to end over a scripted transport, asserting the wire
-  bodies of consecutive rounds.
+  bodies of consecutive rounds; plus `console_logger_demo`, a program that
+  prints a full decision round through the test-tree ConsoleLogger (run it with
+  `ctest -R console_logger_demo -V`).
 
 `tests/support/` holds the two loggers the SDK deliberately does not ship:
 `ConsoleLogger` (prints events, for reading a run by hand) and `CaptureLogger`
@@ -302,8 +304,10 @@ cd build && ctest
 
 ## Diagnostics
 
-The SDK does not log. Every call reports what happened on the returned
-`llm::CompletionResult`, which the application can log however it likes:
+Every call reports what happened twice, for two different audiences.
+
+For the application, on the returned `llm::CompletionResult` — the authoritative
+data:
 
 ```cpp
 const llm::CompletionResult result = provider->Complete(request);
@@ -322,9 +326,24 @@ for (const auto& warning : result.warnings) {         // e.g. a downgrade
 }
 ```
 
-`result.provider_metadata` keeps the raw provider response for debugging, and
-`result.finish_reason`, `result.usage` and `result.model` carry the protocol
-data unchanged.
+`result.provider_metadata` keeps the raw provider response, and
+`result.finish_reason`, `result.usage`, `result.model` and `result.http_attempts`
+carry the protocol data unchanged.
+
+For the developer, as an event stream: the SDK emits records through an
+`llm::ILogger` injected via `SessionConfig::logger` and
+`ProviderOptions::logger` (see the README). The SDK ships no implementation —
+`tests/support/` has the two the tests use, and `console_logger_demo` prints a
+whole decision round:
+
+```bash
+ctest -R console_logger_demo -V          # the event stream, with output
+uv run scripts/build.py --tests          # then: ./build/tests/integration/console_logger_demo
+```
+
+Log records carry classifications and counts (kind, status, http code, attempts,
+tokens, tool counts, schema summaries). Provider and model text is never logged:
+it stays in `CompletionResult` for the caller.
 
 ## Dependencies
 

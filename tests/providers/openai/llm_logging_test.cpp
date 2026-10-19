@@ -209,9 +209,8 @@ TEST(LlmOpenAILoggingTest, FailuresAreClassified) {
     ASSERT_EQ(failures.size(), 1u);
     EXPECT_NE(failures[0].find("kind=auth"), std::string::npos);
     EXPECT_NE(failures[0].find("http=401"), std::string::npos);
-    EXPECT_NE(failures[0].find("Incorrect API key"), std::string::npos)
-        << "the provider's own error message is useful; the raw body is not "
-           "logged";
+    EXPECT_EQ(failures[0].find("Incorrect API key"), std::string::npos)
+        << "the provider's text belongs in CompletionResult, not in the log";
   }
 }
 
@@ -273,6 +272,37 @@ TEST(LlmOpenAILoggingTest, DowngradeIsReportedAsAWarning) {
   EXPECT_EQ(downgraded.level, LogLevel::Warning);
 }
 
+TEST(LlmOpenAILoggingTest, ProviderTextNeverEntersTheLog) {
+  Fixture fixture;
+  // A text-only answer: the failure detail embeds the model's own words.
+  const nlohmann::json body{
+      {"model", "gpt-5.6"},
+      {"choices",
+       nlohmann::json::array({nlohmann::json{
+           {"finish_reason", "stop"},
+           {"message",
+            {{"role", "assistant"}, {"content", "I would rather talk."}}}}})},
+      {"usage",
+       {{"prompt_tokens", 3}, {"completion_tokens", 5}, {"total_tokens", 8}}}};
+  fixture.transport->responses.push_back(ScriptedTransport::Ok(body.dump()));
+
+  const CompletionResult result =
+      fixture.Complete(MakeRequest(), fixture.Options());
+
+  ASSERT_EQ(result.status, CompletionStatus::NoToolCalls);
+  EXPECT_NE(result.ErrorMessage().find("I would rather talk."),
+            std::string::npos)
+      << "the caller still gets the detail in the result";
+  for (const LogRecord& record : fixture.logger->Records()) {
+    EXPECT_EQ(record.message.find("I would rather talk."), std::string::npos)
+        << "model text must not reach the log: " << record.message;
+  }
+  EXPECT_NE(fixture.logger->Messages(log_event::kRequestCompleted)[0].find(
+                "status=no tool calls"),
+            std::string::npos)
+      << "the status is the classification the log carries";
+}
+
 TEST(LlmOpenAILoggingTest, OnlyMetadataIsLogged) {
   Fixture fixture;
   fixture.transport->responses.push_back(
@@ -289,6 +319,8 @@ TEST(LlmOpenAILoggingTest, OnlyMetadataIsLogged) {
         << "credentials must not be logged: " << record.message;
     EXPECT_EQ(record.message.find(R"({"level":4})"), std::string::npos)
         << "tool arguments must not be logged: " << record.message;
+    EXPECT_EQ(record.message.find("arguments"), std::string::npos)
+        << "argument text must not be logged: " << record.message;
   }
 }
 

@@ -270,10 +270,11 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
                                                ? std::string("unknown error")
                                                : response.error),
                   0, true, response.body);
+    // Classification only: the provider's or the network's own text stays in
+    // CompletionResult, not in the log.
     log(LogLevel::Error, log_event::kRequestFailed,
         "kind=" + ToString(result.error->kind) +
-            ", http=0, attempts=" + std::to_string(attempts_made) +
-            ", message=" + result.error->message);
+            ", http=0, attempts=" + std::to_string(attempts_made));
     return result;
   }
   if (!response.IsSuccess()) {
@@ -285,8 +286,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     log(LogLevel::Error, log_event::kRequestFailed,
         "kind=" + ToString(result.error->kind) +
             ", http=" + std::to_string(response.status) +
-            ", attempts=" + std::to_string(attempts_made) +
-            ", message=" + result.error->message);
+            ", attempts=" + std::to_string(attempts_made));
     return result;
   }
 
@@ -296,6 +296,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
     result.status = CompletionStatus::ProviderError;
     result.error = MakeError(ErrorKind::Parse, parsed.error, response.status,
                              false, response.body);
+    // parsed.error is the parser's own description (never model output).
     log(LogLevel::Error, log_event::kRequestFailed,
         "kind=parse, http=" + std::to_string(response.status) + ", attempts=" +
             std::to_string(attempts_made) + ", message=" + parsed.error);
@@ -361,9 +362,7 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
           ", attempts=" + std::to_string(attempts_made) +
           ", tokens=" + std::to_string(result.usage.total_tokens) +
           ", tools=" + std::to_string(result.tool_calls.size()) +
-          ", finish_reason=" + ToString(result.finish_reason) +
-          (result.IsSuccess() ? std::string()
-                              : ", message=" + result.ErrorMessage()));
+          ", finish_reason=" + ToString(result.finish_reason));
   return result;
 }
 

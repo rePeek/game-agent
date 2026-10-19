@@ -46,6 +46,9 @@ struct Session::State {
   /// The single decision awaiting tool results, if any.
   struct Pending {
     std::uint64_t decision_id = 0;
+    /// Request id of the attempt that produced this decision, so recording and
+    /// discarding can be correlated with the events of that attempt.
+    std::uint64_t request_id = 0;
     std::string context_revision;
     Message assistant;
     std::vector<std::string> tool_call_ids;  // in call order
@@ -257,6 +260,7 @@ DecisionResult Session::FinishAttempt(const std::shared_ptr<State>& state,
     } else if (result.completion.IsSuccess()) {
       State::Pending pending;
       pending.decision_id = state->next_decision_id++;
+      pending.request_id = attempt.request_id;
       pending.context_revision = attempt.context_revision;
       pending.assistant = result.completion.ToAssistantMessage();
       for (const ToolCall& call : result.completion.tool_calls) {
@@ -356,12 +360,15 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
   const std::shared_ptr<ILogger> logger = state_->logger;
   const std::string session_id = state_->session_id;
 
+  // Filled once the decision is found, so even a rejected record keeps the
+  // request id of the attempt it belongs to.
+  std::uint64_t request_id = 0;
   const auto reject = [&](const char* reason) {
     lock.unlock();
     EmitLog(logger, LogLevel::Warning, log_event::kDecisionRecordRejected,
             std::string("decision_id=") + std::to_string(decision_id) + ", " +
                 reason,
-            LogContext{session_id, 0});
+            LogContext{session_id, request_id});
   };
 
   if (state_->closed) {
@@ -373,6 +380,7 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
     reject("no decision with that id is awaiting results");
     return RecordOutcome::UnknownDecision;
   }
+  request_id = pending->request_id;
 
   // Every tool call needs exactly one result, and nothing else: a decision is
   // recorded as a whole or not at all.
@@ -418,7 +426,7 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
   EmitLog(logger, LogLevel::Info, log_event::kDecisionRecorded,
           "decision_id=" + std::to_string(decision_id) + ", results=" +
               std::to_string(results.size()) + ", rev=" + record_revision,
-          LogContext{session_id, 0});
+          LogContext{session_id, request_id});
   return RecordOutcome::Recorded;
 }
 
@@ -426,6 +434,13 @@ bool Session::DiscardDecision(std::uint64_t decision_id) {
   std::unique_lock<std::mutex> lock(state_->mutex);
   const std::shared_ptr<ILogger> logger = state_->logger;
   const std::string session_id = state_->session_id;
+  std::uint64_t request_id = 0;
+  for (const State::Pending& candidate : state_->pending) {
+    if (candidate.decision_id == decision_id) {
+      request_id = candidate.request_id;
+      break;
+    }
+  }
   const std::size_t before = state_->pending.size();
   state_->pending.erase(
       std::remove_if(state_->pending.begin(), state_->pending.end(),
@@ -442,7 +457,7 @@ bool Session::DiscardDecision(std::uint64_t decision_id) {
   if (removed) {
     EmitLog(logger, LogLevel::Info, log_event::kDecisionDiscarded,
             "decision_id=" + std::to_string(decision_id),
-            LogContext{session_id, 0});
+            LogContext{session_id, request_id});
   }
   return removed;
 }
