@@ -1,6 +1,9 @@
 # Core tests: the protocol types, and a target that links nothing else.
 
-add_llm_test(llm_core_tests llm_core_test.cpp)
+add_llm_test(llm_core_tests
+    llm_core_test.cpp
+    llm_logger_test.cpp
+)
 target_link_libraries(llm_core_tests PRIVATE llm::core)
 
 # ---------------------------------------------------------------------------

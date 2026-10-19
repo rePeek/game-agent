@@ -1,8 +1,11 @@
+#include "llm/core/logger.h"
 #include "llm/core/message.h"
 #include "llm/core/request.h"
 #include "llm/core/result.h"
 #include "llm/core/types.h"
 
+#include <memory>
+#include <string_view>
 #include <utility>
 
 namespace llm {
@@ -177,6 +180,29 @@ std::string ToString(ErrorKind kind) {
       break;
   }
   return "unknown";
+}
+
+void EmitLog(const std::shared_ptr<ILogger>& logger,
+             LogLevel level,
+             std::string_view event,
+             std::string message,
+             const LogContext& context) {
+  if (!logger) {
+    return;  // no logger configured: the SDK stays silent
+  }
+
+  LogRecord record;
+  record.level = level;
+  record.event = std::string(event);
+  record.message = std::move(message);
+  record.session_id = context.session_id;
+  record.request_id = context.request_id;
+
+  try {
+    logger->Log(record);
+  } catch (...) {
+    // A logger must never be able to fail a decision. Swallow and carry on.
+  }
 }
 
 }  // namespace llm

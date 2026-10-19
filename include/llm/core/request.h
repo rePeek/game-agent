@@ -1,5 +1,6 @@
 #pragma once
 
+#include "llm/core/logger.h"
 #include "llm/core/message.h"
 #include "llm/core/types.h"
 
@@ -65,6 +66,10 @@ struct ModelRequest {
   /// Upper bound on the number of tool calls a single completion may return.
   /// Enforced by the SDK validator, not by the provider.
   std::optional<std::size_t> max_tool_calls;
+
+  /// Diagnostics only: lets a provider attribute its log events to the session
+  /// and decision that caused them. Request builders ignore it.
+  LogContext log;
 
   bool HasTools() const { return !tools.empty(); }
   const ToolDefinition* FindTool(const std::string& name) const;

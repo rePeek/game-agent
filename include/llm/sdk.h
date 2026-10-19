@@ -8,6 +8,7 @@
 /// and the HTTP implementation stays inside the provider.
 
 // Core: protocol vocabulary and the provider interface.
+#include "llm/core/logger.h"
 #include "llm/core/message.h"
 #include "llm/core/provider.h"
 #include "llm/core/request.h"
