@@ -36,6 +36,33 @@
 
 namespace {
 
+/// A logger is application-side: this one prints what the SDK reports. Football
+/// Sim would adapt its own logging system here instead (and the SDK would not
+/// change at all).
+class EventPrinter final : public llm::ILogger {
+ public:
+  void Log(const llm::LogRecord& record) override {
+    std::cout << "  " << LevelName(record.level) << " [" << record.session_id
+              << ":" << record.request_id << "] " << record.event << ": "
+              << record.message << "\n";
+  }
+
+ private:
+  static const char* LevelName(llm::LogLevel level) {
+    switch (level) {
+      case llm::LogLevel::Debug:
+        return "DEBUG";
+      case llm::LogLevel::Info:
+        return "INFO ";
+      case llm::LogLevel::Warning:
+        return "WARN ";
+      case llm::LogLevel::Error:
+        return "ERROR";
+    }
+    return "?????";
+  }
+};
+
 /// Answers with a fixed tool-call batch: used when no API key is available.
 class ScriptedTransport : public llm::ITransport {
  public:
@@ -210,6 +237,11 @@ int main() {
 
   const bool offline = std::getenv("OPENAI_API_KEY") == nullptr;
 
+  // The SDK ships no logger: this example injects its own into both the
+  // provider and the session, so every event carries the same session id.
+  auto logger = std::make_shared<EventPrinter>();
+  std::cout << "log events (session " << "home" << "):\n";
+
   std::shared_ptr<llm::IModelProvider> provider;
   if (offline) {
     std::cout << "OPENAI_API_KEY is not set: running against a scripted "
@@ -217,9 +249,10 @@ int main() {
     llm::openai::ProviderOptions options;
     options.api_key = "scripted";
     options.transport = std::make_shared<ScriptedTransport>();
+    options.logger = logger;
     provider = llm::openai::CreateProvider(std::move(options));
   } else {
-    provider = llm::openai::CreateProviderFromEnvironment();
+    provider = llm::openai::CreateProviderFromEnvironment(logger);
   }
 
   llm::SessionConfig config;
@@ -231,6 +264,8 @@ int main() {
   config.context.max_decisions = 4;
   config.max_tokens = 300;
   config.max_tool_calls = 3;
+  config.session_id = "home";
+  config.logger = logger;
 
   const std::shared_ptr<llm::Session> session =
       llm::CreateSession(provider, std::move(config));
@@ -241,7 +276,7 @@ int main() {
 
   const llm::Context context = session->ContextSnapshot();
   const llm::RenderedContext rendered = context.Render();
-  std::cout << "session state\n";
+  std::cout << "\nsession state\n";
   std::cout << "  confirmed decisions: " << context.decision_count() << "\n";
   std::cout << "  messages to send:    " << rendered.messages.size()
             << " (included " << rendered.decisions_included << ", dropped "

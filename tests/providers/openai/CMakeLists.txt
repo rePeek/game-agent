@@ -3,7 +3,10 @@
 # (hence the src/ include directory) and assert on the built request JSON
 # (hence nlohmann/json).
 
-add_llm_test(llm_openai_tests llm_openai_test.cpp)
+add_llm_test(llm_openai_tests
+    llm_openai_test.cpp
+    llm_logging_test.cpp
+)
 target_include_directories(llm_openai_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(llm_openai_tests
     PRIVATE

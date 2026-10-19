@@ -246,26 +246,28 @@ DecisionResult Session::FinishAttempt(const std::shared_ptr<State>& state,
   result.status = DecisionStatus::Completed;
   result.completion = std::move(completion);
 
-  std::lock_guard<std::mutex> lock(state->mutex);
-  state->in_flight_revision.reset();
-  state->idle_cv.notify_all();
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->in_flight_revision.reset();
+    state->idle_cv.notify_all();
 
-  if (state->closed) {
-    result = Refused(DecisionStatus::Closed, attempt.context_revision,
-                     "session was closed while the decision was in flight");
-  } else if (result.completion.IsSuccess()) {
-    State::Pending pending;
-    pending.decision_id = state->next_decision_id++;
-    pending.context_revision = attempt.context_revision;
-    pending.assistant = result.completion.ToAssistantMessage();
-    for (const ToolCall& call : result.completion.tool_calls) {
-      pending.tool_call_ids.push_back(call.id);
+    if (state->closed) {
+      result = Refused(DecisionStatus::Closed, attempt.context_revision,
+                       "session was closed while the decision was in flight");
+    } else if (result.completion.IsSuccess()) {
+      State::Pending pending;
+      pending.decision_id = state->next_decision_id++;
+      pending.context_revision = attempt.context_revision;
+      pending.assistant = result.completion.ToAssistantMessage();
+      for (const ToolCall& call : result.completion.tool_calls) {
+        pending.tool_call_ids.push_back(call.id);
+      }
+      result.decision_id = pending.decision_id;
+      state->pending.push_back(std::move(pending));
     }
-    result.decision_id = pending.decision_id;
-    state->pending.push_back(std::move(pending));
   }
 
-  // Emitted outside the lock.
+  // Emitted with the lock released: a logger may call back into the session.
   EmitLog(
       logger,
       result.completion.IsSuccess() ? LogLevel::Info : LogLevel::Warning,
@@ -386,11 +388,14 @@ RecordOutcome Session::RecordToolResults(std::uint64_t decision_id,
       }
     }
     if (matches != 1) {
+      reject("results do not cover every tool call exactly once");
       return RecordOutcome::IncompleteResults;
     }
     tool_messages.push_back(Message::ToolResult(*match));
   }
   if (results.size() != pending->tool_call_ids.size()) {
+    // Extra results, or results for a call that was never made.
+    reject("results do not cover every tool call exactly once");
     return RecordOutcome::IncompleteResults;
   }
 

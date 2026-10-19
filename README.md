@@ -174,6 +174,65 @@ and `max_decisions`: whole decisions are dropped oldest-first, never half of
 one, and `RenderedContext` reports what was kept. No summarization model call
 is involved.
 
+## Logging
+
+The SDK defines a logging interface and produces events; it ships no logger,
+no formatting and no logging dependency. An application injects one:
+
+```cpp
+class MyLogger : public llm::ILogger {
+ public:
+  void Log(const llm::LogRecord& record) override;  // level, event, message,
+                                                    // session_id, request_id
+};
+
+auto logger = std::make_shared<MyLogger>();
+
+llm::SessionConfig config;
+config.model  = llm::openai::models::kGpt56;
+config.logger = logger;          // session events
+config.session_id = "home";      // which decision stream this is
+
+llm::openai::ProviderOptions provider_options;
+provider_options.api_key = "...";
+provider_options.logger  = logger;   // provider events, same sink
+```
+
+Events are stable names (`llm::log_event::*`): `session.created`,
+`session.decision_started`, `session.decision_completed`,
+`session.decision_recorded`, `session.decision_discarded`,
+`session.decision_rejected` (busy or closed — the answer to "why was this
+Busy?"), `session.decision_record_rejected`, `session.closed`,
+`provider.request_started`, `provider.retry`, `provider.request_completed`,
+`provider.request_failed`, `provider.requirement_downgraded` and
+`tools.validation_failed`.
+
+Every record carries `session_id` and the per-attempt `request_id`, so a
+provider shared by several agents can still be attributed:
+
+```
+INFO  [home:1] session.decision_started: rev=rev-62, tools=3, messages=2
+INFO  [home:1] provider.request_started: model=gpt-5.6, tools=3, …
+WARN  [home:1] provider.retry: attempt=1, http=429, kind=rate limit, …
+INFO  [home:1] provider.request_completed: status=success, http=200, attempts=2, …
+INFO  [home:1] session.decision_completed: status=success, tools=3, tokens=128, …
+INFO  [home:1] session.decision_recorded: decision_id=1, results=3, rev=rev-62
+```
+
+What the SDK guarantees, and what it deliberately leaves out:
+
+- **no logger means no logging**, and a logger that throws cannot change a
+  decision's outcome (dispatch swallows the exception);
+- the logger is never called while a session lock is held, so an
+  implementation may call back into the session;
+- only metadata is logged — never prompts, API keys or raw responses;
+- events are per decision and per request, not per simulation tick;
+- logging is diagnostics only: `CompletionResult` and the session history stay
+  authoritative.
+
+Test-side implementations live in `tests/support/`: `ConsoleLogger` for reading
+a run by hand and `CaptureLogger` for asserting on events.
+
 ## Feeding a previous decision back
 
 `llm::Session` does this for you; the section is here because the pieces it

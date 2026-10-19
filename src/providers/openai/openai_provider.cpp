@@ -371,8 +371,10 @@ std::shared_ptr<IModelProvider> CreateProvider(ProviderOptions options) {
   return std::make_shared<OpenAIProvider>(std::move(options));
 }
 
-std::shared_ptr<IModelProvider> CreateProviderFromEnvironment() {
+std::shared_ptr<IModelProvider> CreateProviderFromEnvironment(
+    std::shared_ptr<ILogger> logger) {
   ProviderOptions options;
+  options.logger = std::move(logger);
   if (const char* api_key = std::getenv("OPENAI_API_KEY"); api_key != nullptr) {
     options.api_key = api_key;
   }

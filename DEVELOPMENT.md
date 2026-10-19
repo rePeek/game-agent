@@ -215,12 +215,16 @@ Each module has its own test binary, so the linker checks the module boundary:
   one-decision-at-a-time rule and asynchronous submission) driven by a scripted
   `IModelProvider`, so it needs no provider and no TLS;
 - `tests/providers/openai/` — `llm_openai_tests` (request building, response
-  parsing, provider status mapping) against a fake transport, including one
-  test that exercises the real cpp-httplib transport through a refused
-  connection;
+  parsing, provider status mapping, log events) against a fake transport,
+  including one test that exercises the real cpp-httplib transport through a
+  refused connection;
 - `tests/integration/` — `llm_integration_tests`: Session + Context + the
   OpenAI provider end to end over a scripted transport, asserting the wire
   bodies of consecutive rounds.
+
+`tests/support/` holds the two loggers the SDK deliberately does not ship:
+`ConsoleLogger` (prints events, for reading a run by hand) and `CaptureLogger`
+(collects them, so tests assert on events instead of console output).
 
 GoogleTest is fetched by CMake FetchContent when tests are enabled:
 

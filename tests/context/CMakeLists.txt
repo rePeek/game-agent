@@ -5,5 +5,6 @@
 add_llm_test(llm_context_tests
     llm_context_test.cpp
     llm_session_test.cpp
+    llm_logging_test.cpp
 )
 target_link_libraries(llm_context_tests PRIVATE llm::context)

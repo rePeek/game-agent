@@ -127,8 +127,10 @@ class OpenAIProvider : public IModelProvider {
 /// Convenience factory.
 std::shared_ptr<IModelProvider> CreateProvider(ProviderOptions options);
 
-/// Reads OPENAI_API_KEY and OPENAI_BASE_URL.
-std::shared_ptr<IModelProvider> CreateProviderFromEnvironment();
+/// Reads OPENAI_API_KEY and OPENAI_BASE_URL. The optional logger is shared by
+/// every session using this provider.
+std::shared_ptr<IModelProvider> CreateProviderFromEnvironment(
+    std::shared_ptr<ILogger> logger = nullptr);
 
 }  // namespace openai
 }  // namespace llm
