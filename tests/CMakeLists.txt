@@ -6,8 +6,14 @@
 # library.
 include(GoogleTest)
 
+# Shared test support (ConsoleLogger, CaptureLogger). Resolved here because
+# CMAKE_CURRENT_SOURCE_DIR inside the function would point at the caller's
+# module directory.
+set(LLM_TEST_SUPPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/support)
+
 function(add_llm_test name)
     add_executable(${name} ${ARGN})
+    target_include_directories(${name} PRIVATE ${LLM_TEST_SUPPORT_DIR})
     set_target_properties(${name} PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON

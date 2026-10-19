@@ -1,5 +1,7 @@
 // Unit tests for the logging seam: dispatch behaviour only. The SDK ships no
-// logger, so the record collector here is local to the test.
+// logger; these tests use the shared test collector.
+
+#include "capture_logger.h"
 
 #include <memory>
 #include <stdexcept>
@@ -11,13 +13,6 @@
 
 namespace llm {
 namespace {
-
-class CollectingLogger final : public ILogger {
- public:
-  void Log(const LogRecord& record) override { records.push_back(record); }
-
-  std::vector<LogRecord> records;
-};
 
 class ThrowingLogger final : public ILogger {
  public:
@@ -33,7 +28,7 @@ TEST(LlmLoggerTest, NoLoggerIsSilentAndSafe) {
 }
 
 TEST(LlmLoggerTest, DeliversTheRecordWithItsContext) {
-  auto logger = std::make_shared<CollectingLogger>();
+  auto logger = std::make_shared<CaptureLogger>();
   LogContext context;
   context.session_id = "home";
   context.request_id = 7;
@@ -41,8 +36,9 @@ TEST(LlmLoggerTest, DeliversTheRecordWithItsContext) {
   EmitLog(logger, LogLevel::Info, log_event::kDecisionCompleted,
           "status=success, tools=2", context);
 
-  ASSERT_EQ(logger->records.size(), 1u);
-  const LogRecord& record = logger->records[0];
+  const std::vector<LogRecord> records = logger->Records();
+  ASSERT_EQ(records.size(), 1u);
+  const LogRecord& record = records[0];
   EXPECT_EQ(record.level, LogLevel::Info);
   EXPECT_EQ(record.event, log_event::kDecisionCompleted);
   EXPECT_EQ(record.message, "status=success, tools=2");
@@ -59,12 +55,13 @@ TEST(LlmLoggerTest, AThrowingLoggerCannotFailTheCaller) {
 }
 
 TEST(LlmLoggerTest, MissingContextIsReportedAsEmpty) {
-  auto logger = std::make_shared<CollectingLogger>();
+  auto logger = std::make_shared<CaptureLogger>();
   EmitLog(logger, LogLevel::Debug, log_event::kDecisionStarted, "rev=1");
 
-  ASSERT_EQ(logger->records.size(), 1u);
-  EXPECT_TRUE(logger->records[0].session_id.empty());
-  EXPECT_EQ(logger->records[0].request_id, 0u);
+  const std::vector<LogRecord> records = logger->Records();
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_TRUE(records[0].session_id.empty());
+  EXPECT_EQ(records[0].request_id, 0u);
 }
 
 }  // namespace
