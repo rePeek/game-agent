@@ -90,6 +90,22 @@ target_sources(ai-sdk-cpp-openai
         src/providers/openai/openai_factory.cpp
 )
 
+# ---------------------------------------------------------------------------
+# llm:: core — the protocol surface.
+#
+# Deliberately STL-only: no JSON, no HTTP, no TLS. It is built next to the
+# legacy ai:: components while the migration is in progress, and is not part of
+# the installed export set yet (that is finalised once the legacy API is gone).
+# ---------------------------------------------------------------------------
+add_library(llm-core)
+add_library(llm::core ALIAS llm-core)
+configure_ai_component(llm-core)
+
+target_sources(llm-core
+    PRIVATE
+        src/llm/core.cpp
+)
+
 # Link dependencies
 target_link_libraries(ai-sdk-cpp-core
     PUBLIC
@@ -161,8 +177,8 @@ else()
     endif()
 endif()
 
-# Apply common options to all components
-foreach(target ${COMPONENT_TARGETS})
+# Apply common options to all component targets
+foreach(target ${COMPONENT_TARGETS} llm-core)
     target_compile_options(${target} PRIVATE 
         ${COMMON_WARNINGS}
         $<$<CONFIG:Debug>:${DEBUG_FLAGS}>
