@@ -1,4 +1,4 @@
-// Cross-component tests: Session + Context + the OpenAI provider driven through
+// Cross-component tests: Agent + Context + the OpenAI provider driven through
 // a scripted transport. No network, no API key — but the full stack: the
 // request that would go on the wire is built and asserted at every round.
 
@@ -8,8 +8,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <llm/agent.hpp>
 #include <llm/context/context.h>
-#include <llm/context/session.h>
 #include <llm/providers/openai/openai.h>
 #include <nlohmann/json.hpp>
 
@@ -110,33 +110,39 @@ ToolResult ResultFor(const std::string& call_id, const std::string& name) {
 struct Fixture {
   std::shared_ptr<ScriptedTransport> transport =
       std::make_shared<ScriptedTransport>();
-  std::shared_ptr<Session> session;
+  std::shared_ptr<Agent> agent;
 
   explicit Fixture(std::size_t max_messages = 32) {
     llm::openai::ProviderOptions options;
     options.api_key = "scripted";
     options.transport = transport;
 
-    SessionConfig config;
+    AgentConfig config;
+    config.id = "home";
     config.model = llm::openai::models::kGpt56;
     config.system_prompt = "You are the head coach.";
     config.context.max_messages = max_messages;
     config.max_tokens = 300;
     config.max_tool_calls = 3;
-    session = CreateSession(llm::openai::CreateProvider(std::move(options)),
-                            std::move(config));
-    session->SetTools({PressingTool(), LineTool()});
+    agent = std::make_shared<Agent>(
+        llm::openai::CreateProvider(std::move(options)), std::move(config));
+    agent->SetTools({PressingTool(), LineTool()});
+  }
+
+  /// One decision round: update the context, then ask.
+  DecisionResult Decide(const std::string& revision) {
+    agent->UpdateContext(Update("Minute window.", revision));
+    return agent->DecideAsync().get();
   }
 };
 
-TEST(LlmSessionOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
+TEST(LlmAgentOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
   Fixture fixture;
   fixture.transport->responses.push_back(TwoCallResponse());
 
-  const DecisionResult decision =
-      fixture.session
-          ->CompleteAsync(Update("Minute 62, 1-1, they press high.", "rev-62"))
-          .get();
+  fixture.agent->UpdateContext(
+      Update("Minute 62, 1-1, they press high.", "rev-62"));
+  const DecisionResult decision = fixture.agent->DecideAsync().get();
 
   ASSERT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess())
@@ -154,7 +160,7 @@ TEST(LlmSessionOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
   EXPECT_EQ(body["model"], "gpt-5.6");
   EXPECT_EQ(body["tool_choice"], "required");
   EXPECT_EQ(body["max_completion_tokens"], 300)
-      << "gpt-5.6 takes max_completion_tokens, and the session bound it";
+      << "gpt-5.6 takes max_completion_tokens, and the agent bound it";
   EXPECT_FALSE(body.contains("parallel_tool_calls"));
   ASSERT_EQ(body["tools"].size(), 2u);
   ASSERT_EQ(body["messages"].size(), 2u);
@@ -164,27 +170,24 @@ TEST(LlmSessionOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
             std::string::npos);
 }
 
-TEST(LlmSessionOpenAITest, ToolResultsFeedTheNextRequest) {
+TEST(LlmAgentOpenAITest, ToolResultsFeedTheNextRequest) {
   Fixture fixture;
   fixture.transport->responses.push_back(TwoCallResponse());
 
-  const DecisionResult first =
-      fixture.session->CompleteAsync(Update("Minute 62.", "rev-62")).get();
+  const DecisionResult first = fixture.Decide("rev-62");
   ASSERT_TRUE(first.completion.IsSuccess()) << first.completion.ErrorMessage();
 
   // The game executes the batch and reports what it did.
   EXPECT_EQ(
-      fixture.session->RecordToolResults(
+      fixture.agent->RecordToolResults(
           first.decision_id, {ResultFor("call_a", "set_pressing_intensity"),
                               ResultFor("call_b", "set_defensive_line")}),
       RecordOutcome::Recorded);
 
   fixture.transport->responses.push_back(OneCallResponse());
-  const DecisionResult second =
-      fixture.session
-          ->CompleteAsync(
-              Update("Minute 70, they switched to a low block.", "rev-70"))
-          .get();
+  fixture.agent->UpdateContext(
+      Update("Minute 70, they switched to a low block.", "rev-70"));
+  const DecisionResult second = fixture.agent->DecideAsync().get();
   ASSERT_TRUE(second.completion.IsSuccess())
       << second.completion.ErrorMessage();
 
@@ -210,7 +213,7 @@ TEST(LlmSessionOpenAITest, ToolResultsFeedTheNextRequest) {
             std::string::npos);
 }
 
-TEST(LlmSessionOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
+TEST(LlmAgentOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
   // Each decision here is three messages (assistant + two tool turns), so
   // eight leaves room for the system prompt, the current context and two of
   // them.
@@ -218,22 +221,20 @@ TEST(LlmSessionOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
 
   for (const char* revision : {"rev-1", "rev-2", "rev-3"}) {
     fixture.transport->responses.push_back(TwoCallResponse());
-    const DecisionResult decision =
-        fixture.session->CompleteAsync(Update("Minute window.", revision))
-            .get();
+    fixture.agent->UpdateContext(Update("Minute window.", revision));
+    const DecisionResult decision = fixture.agent->DecideAsync().get();
     ASSERT_TRUE(decision.completion.IsSuccess())
         << decision.completion.ErrorMessage();
-    ASSERT_EQ(fixture.session->RecordToolResults(
+    ASSERT_EQ(fixture.agent->RecordToolResults(
                   decision.decision_id,
                   {ResultFor("call_a", "set_pressing_intensity"),
                    ResultFor("call_b", "set_defensive_line")}),
               RecordOutcome::Recorded);
   }
-  EXPECT_EQ(fixture.session->ContextSnapshot().decision_count(), 3u);
+  EXPECT_EQ(fixture.agent->ContextSnapshot().decision_count(), 3u);
 
   fixture.transport->responses.push_back(OneCallResponse());
-  const DecisionResult fourth =
-      fixture.session->CompleteAsync(Update("Minute 90.", "rev-4")).get();
+  const DecisionResult fourth = fixture.Decide("rev-4");
   ASSERT_TRUE(fourth.completion.IsSuccess())
       << fourth.completion.ErrorMessage();
 
@@ -253,27 +254,25 @@ TEST(LlmSessionOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
   for (const char* index : {"1", "4"}) {
     EXPECT_EQ(body["messages"][std::stoi(index)]["tool_calls"].size(), 2u);
   }
-  EXPECT_EQ(fixture.session->ContextSnapshot().Render().decisions_dropped, 1u);
+  EXPECT_EQ(fixture.agent->ContextSnapshot().Render().decisions_dropped, 1u);
 }
 
-TEST(LlmSessionOpenAITest, StaleDecisionsAreDiscardedNotRecorded) {
+TEST(LlmAgentOpenAITest, StaleDecisionsAreDiscardedNotRecorded) {
   Fixture fixture;
   fixture.transport->responses.push_back(TwoCallResponse());
   fixture.transport->responses.push_back(OneCallResponse());
 
   // A decision taken against rev-62 comes back late.
-  const DecisionResult stale =
-      fixture.session->CompleteAsync(Update("Minute 62.", "rev-62")).get();
+  const DecisionResult stale = fixture.Decide("rev-62");
   ASSERT_TRUE(stale.completion.IsSuccess());
 
   // Meanwhile the game moved on; the caller recognises the stale revision and
   // refuses to apply it.
-  const ContextUpdate newer = Update("Minute 75.", "rev-75");
-  EXPECT_NE(stale.context_revision, newer.context_revision);
-  EXPECT_TRUE(fixture.session->DiscardDecision(stale.decision_id));
+  fixture.agent->UpdateContext(Update("Minute 75.", "rev-75"));
+  EXPECT_NE(stale.context_revision, fixture.agent->current_revision());
+  EXPECT_TRUE(fixture.agent->DiscardDecision(stale.decision_id));
 
-  const DecisionResult next =
-      fixture.session->CompleteAsync(std::move(newer)).get();
+  const DecisionResult next = fixture.agent->DecideAsync().get();
   ASSERT_TRUE(next.completion.IsSuccess());
 
   // The discarded decision left no trace in the transcript.
@@ -281,17 +280,16 @@ TEST(LlmSessionOpenAITest, StaleDecisionsAreDiscardedNotRecorded) {
   ASSERT_EQ(body["messages"].size(), 2u);
   EXPECT_EQ(body["messages"][0]["role"], "system");
   EXPECT_EQ(body["messages"][1]["role"], "user");
-  EXPECT_EQ(fixture.session->ContextSnapshot().decision_count(), 0u);
+  EXPECT_EQ(fixture.agent->ContextSnapshot().decision_count(), 0u);
 }
 
-TEST(LlmSessionOpenAITest, InvalidBatchesNeverReachTheCallerAsSuccess) {
+TEST(LlmAgentOpenAITest, InvalidBatchesNeverReachTheCallerAsSuccess) {
   Fixture fixture;
   // level is out of the schema's range.
   fixture.transport->responses.push_back(WireResponse(
       R"([{"id":"call_a","type":"function","function":{"name":"set_pressing_intensity","arguments":"{\"level\":9}"}}])"));
 
-  const DecisionResult decision =
-      fixture.session->CompleteAsync(Update("Minute 62.", "rev-62")).get();
+  const DecisionResult decision = fixture.Decide("rev-62");
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
   EXPECT_EQ(decision.completion.status, CompletionStatus::InvalidToolCalls);
@@ -299,34 +297,33 @@ TEST(LlmSessionOpenAITest, InvalidBatchesNeverReachTheCallerAsSuccess) {
   EXPECT_NE(decision.completion.ErrorMessage().find("level"),
             std::string::npos);
 
-  // Nothing to confirm, and the session is free for the next decision.
+  // Nothing to confirm, and the agent is free for the next decision.
   EXPECT_EQ(decision.decision_id, 0u);
-  EXPECT_EQ(fixture.session->pending_decision_count(), 0u);
-  EXPECT_FALSE(fixture.session->busy());
+  EXPECT_EQ(fixture.agent->PendingDecisionCount(), 0u);
+  EXPECT_FALSE(fixture.agent->IsBusy());
 }
 
-TEST(LlmSessionOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
+TEST(LlmAgentOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
   Fixture fixture;
   std::uint64_t expected_id = 1;
   for (int round = 1; round <= 4; ++round) {
     const std::string revision = "rev-" + std::to_string(round);
     fixture.transport->responses.push_back(TwoCallResponse());
 
-    const DecisionResult decision =
-        fixture.session->CompleteAsync(Update("Minute window.", revision))
-            .get();
+    fixture.agent->UpdateContext(Update("Minute window.", revision));
+    const DecisionResult decision = fixture.agent->DecideAsync().get();
     ASSERT_TRUE(decision.completion.IsSuccess())
         << decision.completion.ErrorMessage();
     EXPECT_EQ(decision.decision_id, expected_id++);
     EXPECT_EQ(decision.context_revision, revision);
-    EXPECT_EQ(fixture.session->RecordToolResults(
+    EXPECT_EQ(fixture.agent->RecordToolResults(
                   decision.decision_id,
                   {ResultFor("call_a", "set_pressing_intensity"),
                    ResultFor("call_b", "set_defensive_line")}),
               RecordOutcome::Recorded);
   }
 
-  const Context context = fixture.session->ContextSnapshot();
+  const Context context = fixture.agent->ContextSnapshot();
   EXPECT_EQ(context.decision_count(), 4u);
   for (std::size_t i = 0; i < context.decisions().size(); ++i) {
     const DecisionRecord& record = context.decisions()[i];

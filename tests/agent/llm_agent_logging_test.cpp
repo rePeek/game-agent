@@ -1,4 +1,4 @@
-// Tests for the session's log events: correlation, rejections, re-entrancy and
+// Tests for the agent's log events: correlation, rejections, re-entrancy and
 // the promise that logging can never change a decision.
 
 #include "capture_logger.h"
@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <llm/context/session.h>
+#include <llm/agent.hpp>
 #include <llm/core/logger.h>
 #include <llm/core/provider.h>
 
@@ -47,26 +47,25 @@ class ScriptedProvider : public IModelProvider {
   CompletionResult Complete(const ModelRequest&) override { return next; }
 };
 
-/// Logs by asking the session about itself: only safe because the SDK never
-/// calls the logger while holding a session lock.
+/// Logs by asking the agent about itself: only safe because the SDK never
+/// calls the logger while holding an agent lock.
 class ReentrantLogger final : public ILogger {
  public:
-  explicit ReentrantLogger(std::shared_ptr<Session>* session)
-      : session_(session) {}
+  explicit ReentrantLogger(std::shared_ptr<Agent>* agent) : agent_(agent) {}
   int calls = 0;
 
   void Log(const LogRecord&) override {
     ++calls;
-    if (*session_) {
-      (*session_)->pending_decision_count();
-      (*session_)->in_flight_decision_count();
-      (*session_)->current_revision();
-      (*session_)->busy();
+    if (*agent_) {
+      (*agent_)->PendingDecisionCount();
+      (*agent_)->InFlightDecisionCount();
+      (*agent_)->current_revision();
+      (*agent_)->IsBusy();
     }
   }
 
  private:
-  std::shared_ptr<Session>* session_;
+  std::shared_ptr<Agent>* agent_;
 };
 
 class ThrowingLogger final : public ILogger {
@@ -94,27 +93,32 @@ struct Fixture {
   std::shared_ptr<ScriptedProvider> provider =
       std::make_shared<ScriptedProvider>();
   std::shared_ptr<CaptureLogger> logger = std::make_shared<CaptureLogger>();
-  std::shared_ptr<Session> session;
+  std::shared_ptr<Agent> agent;
 
   explicit Fixture(std::shared_ptr<ILogger> injected = nullptr) {
-    SessionConfig config;
+    AgentConfig config;
+    config.id = "home";
     config.model = "gpt-5.6";
     config.system_prompt = "You are the head coach.";
-    config.session_id = "home";
     config.logger = injected != nullptr ? std::move(injected) : logger;
-    session = CreateSession(provider, std::move(config));
-    session->SetTools({PressingTool()});
+    agent = std::make_shared<Agent>(provider, std::move(config));
+    agent->SetTools({PressingTool()});
+  }
+
+  /// One decision round: update the context, then ask.
+  DecisionResult Decide(const std::string& revision) {
+    agent->UpdateContext(Update(revision));
+    return agent->DecideAsync().get();
   }
 };
 
-TEST(LlmSessionLoggingTest, LifecycleEventsCarryTheSessionAndRequestId) {
+TEST(LlmAgentLoggingTest, LifecycleEventsCarryTheAgentAndRequestId) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
 
-  const DecisionResult decision = fixture.session->Complete(Update("rev-62"));
+  const DecisionResult decision = fixture.Decide("rev-62");
   ASSERT_TRUE(decision.completion.IsSuccess());
-  fixture.session->RecordToolResults(decision.decision_id,
-                                     {ResultFor("call_a")});
+  fixture.agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")});
 
   const std::vector<LogRecord> records = fixture.logger->Records();
   ASSERT_EQ(records.size(), 4u);
@@ -126,7 +130,7 @@ TEST(LlmSessionLoggingTest, LifecycleEventsCarryTheSessionAndRequestId) {
   for (const LogRecord& record : records) {
     EXPECT_EQ(record.session_id, "home");
   }
-  EXPECT_EQ(records[0].request_id, 0u) << "session creation is not a decision";
+  EXPECT_EQ(records[0].request_id, 0u) << "agent creation is not a decision";
   EXPECT_EQ(records[1].request_id, 1u);
   EXPECT_EQ(records[2].request_id, records[1].request_id)
       << "started and completed describe the same attempt";
@@ -140,14 +144,14 @@ TEST(LlmSessionLoggingTest, LifecycleEventsCarryTheSessionAndRequestId) {
   EXPECT_NE(records[0].message.find("home"), std::string::npos);
 }
 
-TEST(LlmSessionLoggingTest, RejectionsAndDiscardsExplainThemselves) {
+TEST(LlmAgentLoggingTest, RejectionsAndDiscardsExplainThemselves) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
-  const DecisionResult first = fixture.session->Complete(Update("rev-62"));
+  const DecisionResult first = fixture.Decide("rev-62");
 
   // Still awaiting results: the next decision is refused, and the record says
   // why (this is the "why was it Busy?" answer).
-  const DecisionResult busy = fixture.session->Complete(Update("rev-63"));
+  const DecisionResult busy = fixture.Decide("rev-63");
   EXPECT_EQ(busy.status, DecisionStatus::Busy);
   const bool found_rejection =
       fixture.logger->Has(log_event::kDecisionRejected);
@@ -156,18 +160,19 @@ TEST(LlmSessionLoggingTest, RejectionsAndDiscardsExplainThemselves) {
       fixture.logger->Messages(log_event::kDecisionRejected);
   ASSERT_EQ(rejections.size(), 1u);
   EXPECT_NE(rejections[0].find("awaiting tool results"), std::string::npos);
-  EXPECT_EQ(fixture.session->current_revision(), "rev-62")
-      << "the refused update was not applied";
+  EXPECT_EQ(fixture.agent->current_revision(), "rev-63")
+      << "UpdateContext records the world state whether or not a decision "
+         "starts";
 
   // Discarding is a different event: it is a deliberate decision, not a
   // refusal.
-  EXPECT_TRUE(fixture.session->DiscardDecision(first.decision_id));
+  EXPECT_TRUE(fixture.agent->DiscardDecision(first.decision_id));
   EXPECT_TRUE(fixture.logger->Has(log_event::kDecisionDiscarded));
   EXPECT_EQ(fixture.logger->Count(log_event::kDecisionRejected), 1u);
 
   // The next accepted decision gets the next request id.
   fixture.provider->next = SuccessfulBatch();
-  const DecisionResult second = fixture.session->Complete(Update("rev-64"));
+  const DecisionResult second = fixture.Decide("rev-64");
   const std::vector<std::string> started =
       fixture.logger->Messages(log_event::kDecisionStarted);
   ASSERT_EQ(started.size(), 2u);
@@ -179,14 +184,14 @@ TEST(LlmSessionLoggingTest, RejectionsAndDiscardsExplainThemselves) {
   EXPECT_EQ(second.status, DecisionStatus::Completed);
 }
 
-TEST(LlmSessionLoggingTest, RecordRejectionsAreVisible) {
+TEST(LlmAgentLoggingTest, RecordRejectionsAreVisible) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
-  const DecisionResult decision = fixture.session->Complete(Update("rev-62"));
+  const DecisionResult decision = fixture.Decide("rev-62");
 
-  EXPECT_EQ(fixture.session->RecordToolResults(999, {ResultFor("call_a")}),
+  EXPECT_EQ(fixture.agent->RecordToolResults(999, {ResultFor("call_a")}),
             RecordOutcome::UnknownDecision);
-  EXPECT_EQ(fixture.session->RecordToolResults(decision.decision_id, {}),
+  EXPECT_EQ(fixture.agent->RecordToolResults(decision.decision_id, {}),
             RecordOutcome::IncompleteResults);
 
   const std::vector<std::string> rejections =
@@ -211,15 +216,15 @@ TEST(LlmSessionLoggingTest, RecordRejectionsAreVisible) {
   EXPECT_EQ(rejection_ids[1], 1u);
 }
 
-TEST(LlmSessionLoggingTest, ClosedSessionsAreVisibleAndStillRefuse) {
+TEST(LlmAgentLoggingTest, ClosedAgentsAreVisibleAndStillRefuse) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
-  fixture.session->Complete(Update("rev-62"));
-  fixture.session->Close();
+  fixture.Decide("rev-62");
+  fixture.agent->Close();
 
   EXPECT_TRUE(fixture.logger->Has(log_event::kSessionClosed));
 
-  const DecisionResult refused = fixture.session->Complete(Update("rev-63"));
+  const DecisionResult refused = fixture.Decide("rev-63");
   EXPECT_EQ(refused.status, DecisionStatus::Closed);
   const std::vector<std::string> rejections =
       fixture.logger->Messages(log_event::kDecisionRejected);
@@ -227,16 +232,15 @@ TEST(LlmSessionLoggingTest, ClosedSessionsAreVisibleAndStillRefuse) {
   EXPECT_NE(rejections[0].find("closed"), std::string::npos);
 }
 
-TEST(LlmSessionLoggingTest, AsynchronousDecisionsAreCorrelated) {
+TEST(LlmAgentLoggingTest, AsynchronousDecisionsAreCorrelated) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
 
   for (const char* revision : {"rev-62", "rev-63"}) {
-    const DecisionResult decision =
-        fixture.session->CompleteAsync(Update(revision)).get();
+    const DecisionResult decision = fixture.Decide(revision);
     ASSERT_TRUE(decision.completion.IsSuccess());
-    ASSERT_EQ(fixture.session->RecordToolResults(decision.decision_id,
-                                                 {ResultFor("call_a")}),
+    ASSERT_EQ(fixture.agent->RecordToolResults(decision.decision_id,
+                                               {ResultFor("call_a")}),
               RecordOutcome::Recorded);
   }
 
@@ -257,12 +261,11 @@ TEST(LlmSessionLoggingTest, AsynchronousDecisionsAreCorrelated) {
          "worker finished first";
 }
 
-TEST(LlmSessionLoggingTest, OnlyMetadataIsLogged) {
+TEST(LlmAgentLoggingTest, OnlyMetadataIsLogged) {
   Fixture fixture;
   fixture.provider->next = SuccessfulBatch();
-  const DecisionResult decision = fixture.session->Complete(Update("rev-62"));
-  fixture.session->RecordToolResults(decision.decision_id,
-                                     {ResultFor("call_a")});
+  const DecisionResult decision = fixture.Decide("rev-62");
+  fixture.agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")});
 
   for (const LogRecord& record : fixture.logger->Records()) {
     EXPECT_EQ(record.message.find(kContextText), std::string::npos)
@@ -273,61 +276,63 @@ TEST(LlmSessionLoggingTest, OnlyMetadataIsLogged) {
   }
 }
 
-TEST(LlmSessionLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
+TEST(LlmAgentLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
   Fixture fixture(std::make_shared<CaptureLogger>());
   fixture.provider->next = SuccessfulBatch();
 
   // The same flow without a logger: no records anywhere and no side effects.
-  SessionConfig config;
+  AgentConfig config;
   config.model = "gpt-5.6";
-  auto silent = CreateSession(fixture.provider, std::move(config));
-  silent->SetTools({PressingTool()});
+  Agent silent(fixture.provider, std::move(config));
+  silent.SetTools({PressingTool()});
 
-  const DecisionResult decision = silent->Complete(Update("rev-62"));
+  silent.UpdateContext(Update("rev-62"));
+  const DecisionResult decision = silent.DecideAsync().get();
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(
-      silent->RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      silent.RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
   EXPECT_TRUE(fixture.logger->Records().empty());
 }
 
-TEST(LlmSessionLoggingTest, LoggerMayCallBackIntoTheSession) {
-  std::shared_ptr<Session> session;
-  auto logger = std::make_shared<ReentrantLogger>(&session);
+TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
+  std::shared_ptr<Agent> agent;
+  auto logger = std::make_shared<ReentrantLogger>(&agent);
 
-  SessionConfig config;
+  AgentConfig config;
+  config.id = "home";
   config.model = "gpt-5.6";
-  config.session_id = "home";
   config.logger = logger;
 
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
-  session = CreateSession(provider, std::move(config));
-  session->SetTools({PressingTool()});
+  agent = std::make_shared<Agent>(provider, std::move(config));
+  agent->SetTools({PressingTool()});
 
-  const DecisionResult decision = session->Complete(Update("rev-62"));
+  agent->UpdateContext(Update("rev-62"));
+  const DecisionResult decision = agent->DecideAsync().get();
 
   EXPECT_TRUE(decision.completion.IsSuccess())
-      << "a logger that queries the session must not deadlock it";
+      << "a logger that queries the agent must not deadlock it";
   EXPECT_GT(logger->calls, 0);
   EXPECT_EQ(
-      session->RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
+      agent->RecordToolResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
-  session.reset();  // the reentrant logger must not outlive the session
+  agent.reset();  // the reentrant logger must not outlive the agent
 }
 
-TEST(LlmSessionLoggingTest, AThrowingLoggerDoesNotChangeTheDecision) {
+TEST(LlmAgentLoggingTest, AThrowingLoggerDoesNotChangeTheDecision) {
   Fixture fixture(std::make_shared<ThrowingLogger>());
   fixture.provider->next = SuccessfulBatch();
 
-  const DecisionResult decision = fixture.session->Complete(Update("rev-62"));
+  const DecisionResult decision = fixture.Decide("rev-62");
 
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(decision.decision_id, 1u);
-  EXPECT_EQ(fixture.session->RecordToolResults(decision.decision_id,
-                                               {ResultFor("call_a")}),
+  EXPECT_EQ(fixture.agent->RecordToolResults(decision.decision_id,
+                                             {ResultFor("call_a")}),
             RecordOutcome::Recorded);
-  EXPECT_EQ(fixture.session->ContextSnapshot().decision_count(), 1u);
+  EXPECT_EQ(fixture.agent->ContextSnapshot().decision_count(), 1u);
 }
 
 }  // namespace

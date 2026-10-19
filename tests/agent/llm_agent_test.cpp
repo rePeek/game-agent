@@ -34,6 +34,21 @@ CompletionResult SuccessfulBatch() {
   result.status = CompletionStatus::Success;
   result.tool_calls = {
       ToolCall{"call_a", "set_pressing_intensity", kRawArguments}};
+  result.assistant_text = "Adjusting.";
+  result.usage = Usage{10, 5, 15};
+  result.http_attempts = 1;
+  result.model = "scripted-model";
+  return result;
+}
+
+/// A batch with two calls, used to check result bookkeeping.
+CompletionResult TwoCallBatch() {
+  CompletionResult result;
+  result.status = CompletionStatus::Success;
+  result.tool_calls = {
+      ToolCall{"call_a", "set_pressing_intensity", kRawArguments}};
+  result.tool_calls.push_back(
+      ToolCall{"call_b", "set_defensive_line", R"({"height":"high"})"});
   result.usage = Usage{10, 5, 15};
   result.http_attempts = 1;
   result.model = "scripted-model";
@@ -382,6 +397,33 @@ TEST(LlmAgentTest, ARefusedDecisionStillUsesTheLatestUpdate) {
   ASSERT_TRUE(after.completion.IsSuccess());
   EXPECT_EQ(after.context_revision, "rev-63")
       << "a refused decision does not swallow the update";
+}
+
+TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  provider->next = TwoCallBatch();
+  Agent agent(provider, DefaultConfig());
+
+  const DecisionResult decision = Decide(agent, Update("rev-62"));
+  ASSERT_TRUE(decision.completion.IsSuccess());
+  ASSERT_EQ(decision.completion.tool_calls.size(), 2u);
+
+  // The game may execute in whatever order it likes (here reversed); the
+  // transcript is normalized to the order the model asked in, so every tool
+  // turn sits next to its call in a deterministic position.
+  EXPECT_EQ(agent.RecordToolResults(decision.decision_id,
+                                    {ResultFor("call_b"), ResultFor("call_a")}),
+            RecordOutcome::Recorded);
+
+  // Keep the snapshot alive: ContextSnapshot() returns a copy.
+  const Context context = agent.ContextSnapshot();
+  const DecisionRecord& record = context.decisions()[0];
+  ASSERT_EQ(record.assistant.tool_calls.size(), 2u);
+  EXPECT_EQ(record.assistant.tool_calls[0].id, "call_a");
+  EXPECT_EQ(record.assistant.tool_calls[1].id, "call_b");
+  ASSERT_EQ(record.tool_results.size(), 2u);
+  EXPECT_EQ(record.tool_results[0].tool_call_id, "call_a");
+  EXPECT_EQ(record.tool_results[1].tool_call_id, "call_b");
 }
 
 }  // namespace
