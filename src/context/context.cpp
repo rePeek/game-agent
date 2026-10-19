@@ -22,14 +22,6 @@ bool IsEmpty(const std::string& text) {
 
 Context::Context(ContextConfig config) : config_(config) {}
 
-void Context::SetSystemPrompt(std::string prompt) {
-  system_prompt_ = std::move(prompt);
-}
-
-void Context::SetTools(std::vector<ToolDefinition> tools) {
-  tools_ = std::move(tools);
-}
-
 void Context::SetContextUpdate(ContextUpdate update) {
   current_context_ = std::move(update.current_context);
   recent_history_ = std::move(update.recent_history);
@@ -47,12 +39,9 @@ void Context::ClearDecisions() {
 RenderedContext Context::Render() const {
   RenderedContext rendered;
 
-  // The fixed part: always sent, even if it alone exceeds the budget — a
-  // request without the current state or the system prompt would be useless.
-  if (!IsEmpty(system_prompt_)) {
-    rendered.messages.push_back(Message::System(system_prompt_));
-  }
-  const std::size_t fixed_messages = rendered.messages.size();
+  // The current state and the recent history are always sent, even when they
+  // alone exceed the budget: a request without them would be useless.
+  const std::size_t fixed_messages = 0;
   const bool has_history = !IsEmpty(recent_history_);
   const bool has_context = !IsEmpty(current_context_);
   const std::size_t trailing_messages =
@@ -95,15 +84,6 @@ RenderedContext Context::Render() const {
   }
 
   return rendered;
-}
-
-ModelRequest Context::BuildRequest(std::string model) const {
-  ModelRequest request;
-  request.model = std::move(model);
-  request.messages = BuildMessages();
-  request.tools = tools_;
-  request.tool_choice = ToolChoice::Required();
-  return request;
 }
 
 }  // namespace llm

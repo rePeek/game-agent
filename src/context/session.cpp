@@ -29,6 +29,7 @@ struct Session::State {
 
   Context context;
   std::string system_prompt;
+  std::vector<ToolDefinition> tools;
   std::string model;
   std::optional<std::int32_t> max_tokens;
   std::optional<std::size_t> max_tool_calls;
@@ -138,9 +139,6 @@ Session::Session(std::shared_ptr<IModelProvider> provider, SessionConfig config)
               std::to_string(state_->context.config().max_messages) +
               ", session=" + state_->session_id,
           LogContext{state_->session_id, 0});
-  if (!state_->system_prompt.empty()) {
-    state_->context.SetSystemPrompt(state_->system_prompt);
-  }
 }
 
 Session::~Session() {
@@ -157,18 +155,17 @@ Session::~Session() {
 
 void Session::SetTools(std::vector<ToolDefinition> tools) {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  state_->context.SetTools(std::move(tools));
+  state_->tools = std::move(tools);
 }
 
 std::vector<ToolDefinition> Session::tools() const {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  return state_->context.tools();
+  return state_->tools;
 }
 
 void Session::SetSystemPrompt(std::string prompt) {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  state_->system_prompt = prompt;
-  state_->context.SetSystemPrompt(std::move(prompt));
+  state_->system_prompt = std::move(prompt);
 }
 
 void Session::SetModel(std::string model) {
@@ -216,7 +213,20 @@ Session::Attempt Session::BeginAttempt(ContextUpdate update) {
       attempt.started = true;
       attempt.context_revision = state_->context.context_revision();
       attempt.request_id = state_->next_request_id++;
-      attempt.request = state_->context.BuildRequest(state_->model);
+      // The session owns the system prompt, the tools and the model; the
+      // context owns the history.
+      const RenderedContext rendered = state_->context.Render();
+      attempt.request.model = state_->model;
+      attempt.request.messages.reserve(rendered.messages.size() + 1);
+      if (!state_->system_prompt.empty()) {
+        attempt.request.messages.push_back(
+            Message::System(state_->system_prompt));
+      }
+      attempt.request.messages.insert(attempt.request.messages.end(),
+                                      rendered.messages.begin(),
+                                      rendered.messages.end());
+      attempt.request.tools = state_->tools;
+      attempt.request.tool_choice = ToolChoice::Required();
       attempt.request.max_tokens = state_->max_tokens;
       attempt.request.max_tool_calls = state_->max_tool_calls;
       attempt.request.log = LogContext{state_->session_id, attempt.request_id};

@@ -82,12 +82,6 @@ class Context {
   void SetConfig(ContextConfig config) { config_ = config; }
 
   // --- application-owned inputs -------------------------------------------
-  void SetSystemPrompt(std::string prompt);
-  const std::string& system_prompt() const { return system_prompt_; }
-
-  void SetTools(std::vector<ToolDefinition> tools);
-  const std::vector<ToolDefinition>& tools() const { return tools_; }
-
   /// Records the latest snapshots; both replace what was there before.
   void SetContextUpdate(ContextUpdate update);
   const std::string& current_context() const { return current_context_; }
@@ -104,17 +98,14 @@ class Context {
   void ClearDecisions();
 
   // --- rendering ----------------------------------------------------------
-  /// Renders the transcript: system prompt, the newest decisions that fit,
-  /// recent history, current context.
+  /// Renders the context: the newest decisions that fit, recent history and the
+  /// current snapshot. The owner of the context prepends its system prompt and
+  /// adds its tools and model parameters.
   RenderedContext Render() const;
   std::vector<Message> BuildMessages() const { return Render().messages; }
-  /// The full request for `model` with the current tools.
-  ModelRequest BuildRequest(std::string model) const;
 
  private:
   ContextConfig config_;
-  std::string system_prompt_;
-  std::vector<ToolDefinition> tools_;
   std::string current_context_;
   std::string recent_history_;
   std::string context_revision_;

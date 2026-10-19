@@ -67,7 +67,6 @@ std::vector<std::string> ContentsOf(const std::vector<Message>& messages) {
 
 TEST(LlmContextTest, CurrentContextReplacesTheSnapshot) {
   Context context;
-  context.SetSystemPrompt("You are a coach.");
 
   context.SetContextUpdate(
       Update("Minute 10, 0-0.", "no pressure yet", "rev-1"));
@@ -81,15 +80,17 @@ TEST(LlmContextTest, CurrentContextReplacesTheSnapshot) {
   EXPECT_EQ(context.context_revision(), "rev-2");
 
   const RenderedContext rendered = context.Render();
-  ASSERT_EQ(rendered.messages.size(), 3u);
-  EXPECT_EQ(rendered.messages[0].role, Role::System);
+  // Recent history then the current snapshot: the context owns neither the
+  // system prompt nor the tools.
+  ASSERT_EQ(rendered.messages.size(), 2u);
+  EXPECT_EQ(rendered.messages[0].role, Role::User);
   // The old snapshot is gone, not accumulated.
   for (const std::string& content : ContentsOf(rendered.messages)) {
     EXPECT_EQ(content.find("Minute 10"), std::string::npos) << content;
   }
-  EXPECT_NE(rendered.messages[1].content.find("they press high"),
+  EXPECT_NE(rendered.messages[0].content.find("they press high"),
             std::string::npos);
-  EXPECT_NE(rendered.messages[2].content.find("Minute 62"), std::string::npos);
+  EXPECT_NE(rendered.messages[1].content.find("Minute 62"), std::string::npos);
 }
 
 TEST(LlmContextTest, EmptyBlocksAreSkipped) {
@@ -102,11 +103,14 @@ TEST(LlmContextTest, EmptyBlocksAreSkipped) {
   EXPECT_EQ(rendered.messages[0].role, Role::User);
   EXPECT_NE(rendered.messages[0].content.find("Minute 1."), std::string::npos);
 
-  context.SetSystemPrompt("You are a coach.");
   context.SetContextUpdate(Update("Minute 2.", "some history"));
-  const RenderedContext with_system = context.Render();
-  ASSERT_EQ(with_system.messages.size(), 3u);
-  EXPECT_EQ(with_system.messages[0].role, Role::System);
+  const RenderedContext with_history = context.Render();
+  ASSERT_EQ(with_history.messages.size(), 2u);
+  EXPECT_EQ(with_history.messages[0].role, Role::User);
+  EXPECT_NE(with_history.messages[0].content.find("Recent history"),
+            std::string::npos);
+  EXPECT_NE(with_history.messages[1].content.find("Minute 2."),
+            std::string::npos);
 }
 
 TEST(LlmContextTest, DecisionsKeepToolCallsAndResultsTogether) {
@@ -175,10 +179,9 @@ TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
 
 TEST(LlmContextTest, BudgetDropsWholeDecisionsOldestFirst) {
   ContextConfig config;
-  // system + context use 2 of the 6, leaving room for two 2-message records.
+  // The context uses 1 of the 6, leaving room for two 2-message records.
   config.max_messages = 6;
   Context context(config);
-  context.SetSystemPrompt("You are a coach.");
   context.SetContextUpdate(EmptyUpdate());
   for (std::uint64_t id = 1; id <= 5; ++id) {
     context.AppendDecision(MakeDecision(DecisionSpec{id}));
@@ -188,11 +191,11 @@ TEST(LlmContextTest, BudgetDropsWholeDecisionsOldestFirst) {
 
   EXPECT_EQ(rendered.decisions_included, 2u);
   EXPECT_EQ(rendered.decisions_dropped, 3u);
-  ASSERT_EQ(rendered.messages.size(), 6u);  // 1 + 2*2 + 1
-  EXPECT_EQ(rendered.messages[0].role, Role::System);
+  ASSERT_EQ(rendered.messages.size(), 5u);  // 2*2 + 1
   // The two newest survive, the older three are gone as complete units.
-  EXPECT_EQ(rendered.messages[1].tool_calls[0].id, "call_4");
-  EXPECT_EQ(rendered.messages[3].tool_calls[0].id, "call_5");
+  EXPECT_EQ(rendered.messages[0].tool_calls[0].id, "call_4");
+  EXPECT_EQ(rendered.messages[2].tool_calls[0].id, "call_5");
+  EXPECT_EQ(rendered.messages[4].role, Role::User);
 
   // The stored history is untouched: trimming is a rendering decision.
   EXPECT_EQ(context.decision_count(), 5u);
@@ -219,9 +222,8 @@ TEST(LlmContextTest, MaxDecisionsCapsWhatIsKept) {
 
 TEST(LlmContextTest, EssentialBlocksAreSentEvenWithoutBudget) {
   ContextConfig config;
-  config.max_messages = 2;  // impossible: system + context already need 2
+  config.max_messages = 2;  // history + context already use both
   Context context(config);
-  context.SetSystemPrompt("You are a coach.");
   context.SetContextUpdate(Update("Minute 90.", "tense"));
   context.AppendDecision(MakeDecision(DecisionSpec{1}));
 
@@ -229,39 +231,29 @@ TEST(LlmContextTest, EssentialBlocksAreSentEvenWithoutBudget) {
 
   EXPECT_EQ(rendered.decisions_included, 0u);
   EXPECT_EQ(rendered.decisions_dropped, 1u);
-  ASSERT_EQ(rendered.messages.size(), 3u);
-  EXPECT_EQ(rendered.messages[0].role, Role::System);
-  EXPECT_NE(rendered.messages[1].content.find("Recent history"),
+  ASSERT_EQ(rendered.messages.size(), 2u);
+  EXPECT_NE(rendered.messages[0].content.find("Recent history"),
             std::string::npos);
-  EXPECT_NE(rendered.messages[2].content.find("Current context"),
+  EXPECT_NE(rendered.messages[1].content.find("Current context"),
             std::string::npos);
 }
 
-TEST(LlmContextTest, BuildRequestCarriesToolsAndForcesToolCalling) {
+TEST(LlmContextTest, RenderIsTheWholeContextApi) {
   Context context;
-  context.SetSystemPrompt("You are a coach.");
-  context.SetContextUpdate(EmptyUpdate());
+  context.SetContextUpdate(Update("Minute 20.", "quiet"));
+  context.AppendDecision(MakeDecision(DecisionSpec{1}));
 
-  llm::ToolDefinition tool;
-  tool.name = "set_pressing_intensity";
-  tool.description = "Pressing intensity";
-  tool.parameters_schema_json = R"({"type":"object"})";
-  tool.strict = true;
-  context.SetTools({tool});
-
-  const ModelRequest request = context.BuildRequest("gpt-5.6");
-
-  EXPECT_EQ(request.model, "gpt-5.6");
-  ASSERT_EQ(request.tools.size(), 1u);
-  EXPECT_EQ(request.tools[0].name, "set_pressing_intensity");
-  EXPECT_TRUE(request.tools[0].strict);
-  EXPECT_EQ(request.tool_choice.mode, ToolChoiceMode::Required);
-  ASSERT_EQ(request.messages.size(), 2u);
-  EXPECT_EQ(request.messages[0].role, Role::System);
-
-  // The context is reusable: rendering twice gives the same transcript.
-  EXPECT_EQ(context.BuildRequest("gpt-5.6").messages.size(),
-            request.messages.size());
+  // Rendering twice gives the same transcript, and the context adds neither a
+  // system prompt nor tools: those belong to the agent that owns it.
+  const std::vector<Message> first = context.BuildMessages();
+  const std::vector<Message> second = context.BuildMessages();
+  ASSERT_EQ(first.size(), second.size());
+  ASSERT_EQ(first.size(), 4u);
+  EXPECT_EQ(first[0].role, Role::Assistant);
+  EXPECT_EQ(first[3].role, Role::User);
+  for (const Message& message : first) {
+    EXPECT_NE(message.role, Role::System);
+  }
 }
 
 TEST(LlmContextTest, ClearDecisionsResetsTheHistory) {
