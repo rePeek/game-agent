@@ -1,10 +1,10 @@
 # AI SDK CPP
 
-The AI SDK CPP is a modern C++ toolkit designed to help you build AI-powered applications with popular model providers like OpenAI and Anthropic. It provides a unified, easy-to-use API that abstracts away the complexity of different provider implementations.
+The AI SDK CPP is a modern C++ toolkit for calling tool-calling capable language models from C++: it turns a request into a validated set of structured tool calls, and hides the differences between OpenAI-compatible endpoints behind one interface.
 
 ## Motivation
 
-C++ developers have long lacked a first-class, convenient way to interact with modern AI services like OpenAI, Anthropic, and others. AI SDK CPP bridges this gap by providing:
+C++ developers have long lacked a first-class, convenient way to reach the model endpoints used by agentic applications. AI SDK CPP bridges this gap by providing:
 
 - **Unified API**: Work with multiple AI providers through a single, consistent interface
 - **Modern C++**: Built with C++20 features for clean, expressive code
@@ -18,7 +18,7 @@ You will need a C++20 compatible compiler and CMake 3.16+ installed on your deve
 
 ### Core API
 
-The AI SDK CPP Core module provides a unified API to interact with model providers like OpenAI and Anthropic.
+The AI SDK CPP Core module provides a unified API to interact with OpenAI-compatible model providers.
 
 #### OpenAI Integration
 
@@ -38,54 +38,6 @@ int main() {
     
     if (result) {
         std::cout << result->text << std::endl;
-    }
-    
-    return 0;
-}
-```
-
-#### Anthropic Integration
-
-```cpp
-#include <ai/anthropic.h>
-#include <ai/core.h>
-#include <iostream>
-
-int main() {
-    // Ensure ANTHROPIC_API_KEY environment variable is set
-    auto client = ai::anthropic::create_client();
-    ai::GenerateOptions options(ai::anthropic::models::kClaudeSonnet5,
-                                "Explain quantum computing in simple terms.");
-    options.system = "You are a helpful assistant.";
-    auto result = client.generate_text(options);
-
-    if (result) {
-        std::cout << result->text << std::endl;
-    }
-
-    return 0;
-}
-```
-
-#### Streaming Responses
-
-```cpp
-#include <ai/openai.h>
-#include <ai/core.h>
-#include <iostream>
-
-int main() {
-    auto client = ai::openai::create_client();
-    
-    ai::GenerateOptions generate_options(ai::openai::models::kGpt56,
-                                         "Write a short story about a robot.");
-    generate_options.system = "You are a helpful assistant.";
-    auto stream = client.stream_text(ai::StreamOptions(generate_options));
-    
-    for (const auto& event : stream) {
-        if (event.is_text_delta()) {
-            std::cout << event.text_delta << std::flush;
-        }
     }
     
     return 0;
@@ -251,9 +203,6 @@ int main() {
 }
 ```
 
-The same retry-config overload is available from
-`ai::anthropic::create_client` for Anthropic requests.
-
 #### Using OpenAI-Compatible APIs (OpenRouter, etc.)
 
 The OpenAI client can be used with any OpenAI-compatible API by specifying a custom base URL. This allows you to use alternative providers like OpenRouter, which offers access to multiple models through a unified API.
@@ -303,29 +252,22 @@ See the [OpenRouter example](examples/openrouter_example.cpp) for a complete dem
 
 ### Currently Supported
 
-- ✅ **Text Generation**: Generate text completions with OpenAI and Anthropic models
-- ✅ **Streaming**: Real-time streaming of generated content
+- ✅ **Text Generation**: Non-streaming completions against OpenAI and OpenAI-compatible APIs
 - ✅ **Multi-turn Conversations**: Support for conversation history
-- ✅ **Error Handling**: Comprehensive error handling with optional types
-- ✅ **Embeddings**: OpenAI text embedding support
-
-### Recently Added
-
-- ✅ **Tool Calling**: Function calling and tool integration with multi-step support
+- ✅ **Tool Calling**: Function calling and multi-step tool workflows
 - ✅ **Async Tools**: Asynchronous tool execution with parallel processing
 - ✅ **Configurable Retries**: Customizable retry behavior with exponential backoff
+- ✅ **Error Handling**: Comprehensive error handling with optional types
 
 ### Coming Soon
 
-- 🚧 **Additional Providers**: Google, Cohere, and other providers
-- 🚧 **Image Generation**: Support for image generation models
+- 🚧 **Local Models**: A llama.cpp provider emitting the same tool-call protocol
 
 ## Examples
 
 Check out our [examples directory](examples/) for more comprehensive usage examples:
 
 - [Basic Chat Application](examples/basic_chat.cpp)
-- [Streaming Chat](examples/streaming_chat.cpp)
 - [Multi-provider Comparison](examples/multi_provider.cpp)
 - [Error Handling](examples/error_handling.cpp)
 - [Retry Configuration](examples/retry_config_example.cpp)
@@ -334,23 +276,19 @@ Check out our [examples directory](examples/) for more comprehensive usage examp
 - [Async Tool Execution](examples/tool_calling_async.cpp)
 - [OpenRouter Integration](examples/openrouter_example.cpp) - Using OpenAI-compatible APIs
 
-
 ## Requirements
 
 - **C++ Standard**: C++20 or higher
 - **CMake**: 3.16 or higher
 
-## Dependencies and Modifications
+## Dependencies
 
-### nlohmann/json (Patched)
+The linked dependency set is deliberately small:
 
-This project uses a patched version of nlohmann/json to remove the dependency on `localeconv()`, which is not thread-safe. The patch ensures:
-
-- **Thread Safety**: Eliminates calls to the non-thread-safe `localeconv()` function, allowing downstream users to safely use the library in multi-threaded environments without worrying about locale-related race conditions
-- **Consistent Behavior**: Always uses '.' as the decimal point separator regardless of system locale
-- **Simplified Integration**: Downstream users don't need to implement locale synchronization or worry about thread safety issues
-
-This modification improves both safety and portability of the JSON library in concurrent applications.
+- **cpp-httplib**: vendored header-only HTTP client, used together with OpenSSL
+- **nlohmann/json**: an existing `nlohmann_json::nlohmann_json` target is reused when the enclosing project provides one; otherwise `find_package()` is tried, and otherwise CMake fetches the official v3.12.0 release with a pinned SHA256
+- **OpenSSL**: TLS for HTTPS endpoints
+- **GoogleTest**: tests only, fetched by CMake
 
 ## Acknowledgments
 

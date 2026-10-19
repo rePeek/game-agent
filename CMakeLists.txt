@@ -103,28 +103,23 @@ target_link_libraries(ai-sdk-cpp-core
         $<INSTALL_INTERFACE:Threads::Threads>
 )
 
-# Provider components link to core and share common dependencies
-foreach(provider openai)
-    target_link_libraries(ai-sdk-cpp-${provider}
-        PUBLIC
-            ai::core
-            nlohmann_json::nlohmann_json
-        PRIVATE
-            $<BUILD_INTERFACE:httplib::httplib>
-            $<INSTALL_INTERFACE:OpenSSL::SSL>
-            $<INSTALL_INTERFACE:OpenSSL::Crypto>
-            $<INSTALL_INTERFACE:Threads::Threads>
-    )
-
-    # Set component availability and HTTP definitions
-    string(TOUPPER ${provider} PROVIDER_UPPER)
-    target_compile_definitions(ai-sdk-cpp-${provider}
-        PUBLIC
-            AI_SDK_HAS_${PROVIDER_UPPER}=1
-        PRIVATE
-            ${HTTPLIB_COMPILE_DEFS}
-    )
-endforeach()
+# OpenAI component links to core and shares the common dependencies
+target_link_libraries(ai-sdk-cpp-openai
+    PUBLIC
+        ai::core
+        nlohmann_json::nlohmann_json
+    PRIVATE
+        $<BUILD_INTERFACE:httplib::httplib>
+        $<INSTALL_INTERFACE:OpenSSL::SSL>
+        $<INSTALL_INTERFACE:OpenSSL::Crypto>
+        $<INSTALL_INTERFACE:Threads::Threads>
+)
+target_compile_definitions(ai-sdk-cpp-openai
+    PUBLIC
+        AI_SDK_HAS_OPENAI=1
+    PRIVATE
+        ${HTTPLIB_COMPILE_DEFS}
+)
 
 # Core needs HTTP definitions too
 target_compile_definitions(ai-sdk-cpp-core

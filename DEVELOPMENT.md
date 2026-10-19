@@ -106,7 +106,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build --parallel $(nproc)
 ```
 
-Note: Dependencies will be automatically fetched and built using CPM.cmake during the configuration step.
+Note: the vendored headers are used directly and everything else is resolved (or fetched) during the configuration step; see "Dependencies" below.
 
 ## Development Scripts
 
@@ -133,7 +133,7 @@ uv run scripts/build.py --clean --export-compile-commands  # Clean + IDE support
 - ✅ Clean builds
 - ✅ Export compile commands for IDEs
 - ✅ Parallel building
-- ✅ Automatic dependency management via CPM.cmake
+- ✅ Automatic dependency management via CMake FetchContent
 - ✅ Rich terminal output with progress indicators
 
 ### 🎨 format.py - Code Formatting
@@ -208,7 +208,7 @@ Tests use Google Test framework, which is automatically fetched when you build w
 uv run scripts/build.py --tests
 ```
 
-The build system will automatically download and configure Google Test via CPM.cmake.
+The build system downloads and configures Google Test via CMake FetchContent.
 
 ### Writing Tests
 
@@ -336,8 +336,7 @@ With **info** level enabled:
 
 ```
 [2024-01-01 12:00:01.235] [info] Text generation successful - model: gpt-5.6, response_id: chatcmpl-abc123
-[2024-01-01 12:00:02.456] [info] Text streaming started - model: gpt-5.6-luna
-[2024-01-01 12:00:03.789] [info] Stream completed - tokens used: 150 prompt, 350 completion, 500 total
+[2024-01-01 12:00:01.236] [info] Model made 1 tool call
 ```
 
 ### Custom Logger Configuration
@@ -415,11 +414,11 @@ protected:
 
 ### Core Dependencies
 
-Managed automatically via CPM.cmake:
+Public header dependencies are resolved in this order: an existing target in the
+enclosing project, `find_package()`, then a pinned upstream fetch by CMake.
 
-- **nlohmann-json**: JSON parsing and generation (fetched from GitHub)
-- **cpp-httplib**: HTTP client library with OpenSSL support (fetched from GitHub)
-- **concurrentqueue**: Lock-free concurrent queue (fetched from GitHub)
+- **nlohmann-json**: JSON parsing and generation (reused, found, or fetched)
+- **cpp-httplib**: HTTP client library with OpenSSL support (vendored header-only)
 - **openssl**: Cryptographic library (system-provided)
 - **Built-in logging**: ai::logger provides flexible logging capabilities
 
@@ -427,7 +426,7 @@ Managed automatically via CPM.cmake:
 
 Automatically fetched when tests are enabled:
 
-- **gtest**: Google's C++ testing framework (fetched from GitHub via CPM.cmake)
+- **gtest**: Google's C++ testing framework (fetched from GitHub by CMake)
 
 ### Development Dependencies
 
