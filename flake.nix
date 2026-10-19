@@ -60,8 +60,8 @@
           # Misc
           git
         ]
-        ++ lib.optionals stdenv.isLinux [ gdb ]
-        ++ lib.optionals stdenv.isDarwin [ lldb ];
+        ++ lib.optionals stdenv.hostPlatform.isLinux [ gdb ]
+        ++ lib.optionals stdenv.hostPlatform.isDarwin [ lldb ];
 
       devShellsFor =
         system:
