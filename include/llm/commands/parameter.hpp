@@ -22,6 +22,7 @@
 /// implementation (src/commands/schema.cpp, src/commands/arguments.cpp).
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -266,11 +267,23 @@ class Param {
  private:
   /// Stores an integral bound exactly and a floating point bound as double, so
   /// only one of the two forms is ever set.
+  ///
+  /// Integer bounds are std::int64_t. A Param<std::uint64_t> bound above
+  /// INT64_MAX cannot be represented and is clamped: the decoder also reads
+  /// integers through std::int64_t, so a value that large is rejected either
+  /// way. Keep unsigned command parameters within [0, INT64_MAX].
   static void SetBound(std::optional<double>& as_double,
                        std::optional<std::int64_t>& as_int,
                        T value) {
     if constexpr (std::is_integral_v<T>) {
-      as_int = static_cast<std::int64_t>(value);
+      if constexpr (std::is_unsigned_v<T>) {
+        constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+        as_int = value > static_cast<T>(kMax)
+                     ? kMax
+                     : static_cast<std::int64_t>(value);
+      } else {
+        as_int = static_cast<std::int64_t>(value);
+      }
       as_double.reset();
     } else {
       as_double = static_cast<double>(value);

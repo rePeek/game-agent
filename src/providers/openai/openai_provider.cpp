@@ -125,6 +125,30 @@ std::string BuildUrl(const std::string& base_url) {
   return base + kCompletionsPath;
 }
 
+/// True when the base URL points at OpenAI's own API host. Compared by
+/// hostname so a path or query that merely mentions the name (or a lookalike
+/// host) is not mistaken for it.
+bool IsNativeOpenAIHost(const std::string& base_url) {
+  std::string authority = base_url;
+  const std::size_t scheme = authority.find("://");
+  if (scheme != std::string::npos) {
+    authority = authority.substr(scheme + 3);
+  }
+  const std::size_t authority_end = authority.find_first_of("/?#");
+  if (authority_end != std::string::npos) {
+    authority = authority.substr(0, authority_end);
+  }
+  const std::size_t userinfo = authority.find('@');
+  if (userinfo != std::string::npos) {
+    authority = authority.substr(userinfo + 1);
+  }
+  const std::size_t port = authority.find(':');
+  if (port != std::string::npos) {
+    authority = authority.substr(0, port);
+  }
+  return authority == "api.openai.com";
+}
+
 CompletionResult ProviderErrorResult(const ModelRequest& request,
                                      ModelError error) {
   CompletionResult result;
@@ -398,8 +422,7 @@ std::shared_ptr<IModelProvider> CreateProviderFromEnvironment(
   // OpenAI's own host, declare conservative capabilities and let the SDK
   // validate the output instead. Callers who know their endpoint enforces
   // them build ProviderOptions themselves and use CreateProvider().
-  const bool native_openai =
-      options.base_url.find("api.openai.com") != std::string::npos;
+  const bool native_openai = IsNativeOpenAIHost(options.base_url);
   if (!native_openai) {
     options.capabilities.forced_command_choice = false;
     options.capabilities.strict_command_schema = false;

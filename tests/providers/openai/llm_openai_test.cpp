@@ -1146,10 +1146,16 @@ TEST(LlmOpenAIProtocolTest, CompatibleEndpointsGetConservativeCapabilities) {
   EXPECT_FALSE(compatible->Capabilities().forced_command_choice);
   EXPECT_FALSE(compatible->Capabilities().strict_command_schema);
 
-  setenv("OPENAI_BASE_URL", "https://api.openai.com", 1);
+  setenv("OPENAI_BASE_URL", "https://api.openai.com/v1", 1);
   const auto native = llm::openai::CreateProviderFromEnvironment();
   EXPECT_TRUE(native->Capabilities().forced_command_choice);
   EXPECT_TRUE(native->Capabilities().strict_command_schema);
+
+  // The host is compared, not a substring: a lookalike or a query that merely
+  // mentions the name is still a compatible, unverified endpoint.
+  setenv("OPENAI_BASE_URL", "https://evil.example/?next=api.openai.com", 1);
+  const auto lookalike = llm::openai::CreateProviderFromEnvironment();
+  EXPECT_FALSE(lookalike->Capabilities().forced_command_choice);
 
   if (previous != nullptr) {
     setenv("OPENAI_BASE_URL", saved.c_str(), 1);

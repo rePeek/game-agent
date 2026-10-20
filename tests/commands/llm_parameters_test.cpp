@@ -3,6 +3,7 @@
 // here, so this binary needs no JSON library.
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -249,5 +250,18 @@ TEST(LlmParametersTest, LargeIntegerBoundsAreExact) {
           .ok);
 }
 
+TEST(LlmParametersTest, UnsignedBoundsAboveInt64MaxAreClampedNotWrapped) {
+  const auto params =
+      Params(Param<std::uint64_t>("v")
+                 .Range(0, std::numeric_limits<std::uint64_t>::max())
+                 .Required());
+  const ParameterDescriptor descriptor = params.Descriptors()[0];
+  ASSERT_TRUE(descriptor.minimum_int.has_value());
+  ASSERT_TRUE(descriptor.maximum_int.has_value());
+  EXPECT_EQ(*descriptor.minimum_int, 0);
+  // The decoder reads integers through std::int64_t, so INT64_MAX is the
+  // largest representable bound; it must not wrap to a negative number.
+  EXPECT_EQ(*descriptor.maximum_int, std::numeric_limits<std::int64_t>::max());
+}
 }  // namespace
 }  // namespace llm
