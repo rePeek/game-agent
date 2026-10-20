@@ -42,7 +42,7 @@ struct DecisionSpec {
 
 DecisionRecord MakeDecision(const DecisionSpec& spec) {
   CommandCall call{"call_" + std::to_string(spec.id), spec.command_name,
-                spec.arguments};
+                   spec.arguments};
   DecisionRecord record;
   record.decision_id = spec.id;
   record.context_revision = "rev-" + std::to_string(spec.id);
@@ -54,7 +54,8 @@ DecisionRecord MakeDecision(const DecisionSpec& spec) {
   CommandResult applied;
   applied.command_call_id = call.id;
   applied.name = call.name;
-  applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
+  applied.outcome.success = true;
+  applied.outcome.content_json = R"({"applied":true})";
   record.command_results = {Message::CommandResultMessage(applied)};
   return record;
 }
@@ -132,7 +133,8 @@ TEST(LlmContextTest, DecisionsKeepCommandCallsAndResultsTogether) {
 
   EXPECT_EQ(rendered.messages[0].role, Role::Assistant);
   ASSERT_EQ(rendered.messages[0].command_calls.size(), 1u);
-  EXPECT_EQ(rendered.messages[0].command_calls[0].name, "set_pressing_intensity");
+  EXPECT_EQ(rendered.messages[0].command_calls[0].name,
+            "set_pressing_intensity");
   EXPECT_EQ(rendered.messages[1].role, Role::Tool);
   EXPECT_EQ(rendered.messages[1].command_call_id, "call_1");
 
@@ -158,7 +160,8 @@ TEST(LlmContextTest, MultiToolDecisionsStayContiguous) {
     CommandResult result;
     result.command_call_id = call.id;
     result.name = call.name;
-    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
+    result.outcome.success = true;
+    result.outcome.content_json = R"({"applied":true})";
     record.command_results.push_back(Message::CommandResultMessage(result));
   }
   ASSERT_EQ(record.MessageCount(), 3u);
@@ -343,6 +346,26 @@ TEST(LlmContextTest, TokenBudgetDropsOldestDecisionsAndReportsOvershoot) {
   EXPECT_GT(too_large.estimated_tokens, impossible.max_input_tokens);
 }
 
+TEST(LlmContextTest, AnOversizedDecisionIsDroppedRatherThanRefusing) {
+  Context context;
+  context.SetContextUpdate(Update("now"));
+  DecisionSpec huge;
+  huge.arguments = R"({"note":")" + std::string(4000, 'a') + R"("})";
+  context.AppendDecision(MakeDecision(huge));
+
+  // There is room for the current state but not for the decision.
+  RenderBudget budget;
+  budget.max_input_tokens = 40;
+  const RenderedContext rendered = context.Render(budget);
+
+  EXPECT_FALSE(rendered.exceeds_budget)
+      << "history is expendable; only essential content can refuse a request";
+  EXPECT_EQ(rendered.decisions_included, 0u);
+  EXPECT_EQ(rendered.decisions_dropped, 1u);
+  ASSERT_EQ(rendered.messages.size(), 1u);  // only the current context
+  EXPECT_EQ(rendered.messages[0].role, Role::User);
+  EXPECT_NE(rendered.messages[0].content.find("now"), std::string::npos);
+}
 
 }  // namespace
 }  // namespace llm

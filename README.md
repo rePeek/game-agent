@@ -164,7 +164,27 @@ string enumerations. Fluent constraints: `Description`, `Required`/`Optional`,
 `Default`, `Range`/`Min`/`Max`, `MinLength`/`MaxLength`, `OneOf`.
 
 The generated schema only uses constraints the SDK validator implements, so a
-schema the SDK produces is always one it can enforce.
+schema the SDK produces is always one it can enforce. Three rules keep the
+schema, the validator and the decoder in agreement:
+
+- a parameter that is neither `Required` nor has a `Default` is refused at
+  registration: an omitted value must have one defined meaning;
+- an optional parameter is expressed as a nullable type (`["integer",
+  "null"]`) and stays out of `required`, so it can be omitted or sent as
+  `null`, which the SDK then fills from the default;
+- a command with `strict = true` is sent to a strict-capable provider with
+  every property moved into `required` (OpenAI's strict dialect) and `default`
+  dropped (it is not in that subset). A provider that cannot enforce strict
+  gets the logical schema and no `strict` flag, and the SDK validator remains
+  the guarantee.
+
+```cpp
+llm::Params(
+    llm::Param<int>("level").Range(1, 5).Required(),
+    llm::Param<std::string>("reason").OneOf("a", "b").Default("a"))
+// -> level is required; reason is optional and nullable, and means "a" when
+//    the model leaves it out.
+```
 
 ### Context, budgets and memory
 
@@ -175,9 +195,12 @@ transcript is trimmed deterministically, oldest whole decision first:
 - `max_messages` / `max_decisions` bound the rendered request;
 - `max_memory_decisions` bounds what is kept in memory;
 - `max_input_tokens` (approximate, see `EstimateTokens`) covers the system
-  prompt, the command schemas and the messages; `reserved_output_tokens` is
-  subtracted first. If even the fixed content and the newest decision do not fit,
-  the agent answers `ContextTooLarge` **without sending anything**.
+  prompt, the command schemas, the current facts and the messages;
+  `reserved_output_tokens` is subtracted first. History is expendable: an
+  oversized decision is dropped (oldest first) rather than failing the
+  request. Only when the system prompt, command schemas and current facts
+  alone exceed the budget does the agent answer `ContextTooLarge` **without
+  sending anything**.
 
 A decision is stored and trimmed as one unit — its framing user turn, the
 assistant command calls and one result per call. No summarization model call is

@@ -77,9 +77,10 @@ RenderedContext Context::Render(RenderBudget budget) const {
   const bool budgeted = budget.max_input_tokens > 0;
   const std::size_t fixed = budget.fixed_tokens + trailing_tokens;
   const std::size_t budget_left =
-      !budgeted ? 0
-                : (budget.max_input_tokens > fixed ? budget.max_input_tokens - fixed
-                                                   : 0);
+      !budgeted
+          ? 0
+          : (budget.max_input_tokens > fixed ? budget.max_input_tokens - fixed
+                                             : 0);
 
   // Decisions: newest first, whole records only. The first record that does not
   // fit ends the walk, so the kept history is always a contiguous tail.
@@ -97,7 +98,7 @@ RenderedContext Context::Render(RenderBudget budget) const {
     if (used_messages + count > config_.max_messages) {
       break;  // the message budget drops this and every older decision
     }
-    if (budgeted && used_tokens + tokens > budget_left && !kept.empty()) {
+    if (budgeted && used_tokens + tokens > budget_left) {
       break;  // drop this and every older decision
     }
     used_messages += count;
@@ -114,9 +115,8 @@ RenderedContext Context::Render(RenderBudget budget) const {
   for (auto it = kept.rbegin(); it != kept.rend(); ++it) {
     const DecisionRecord& record = **it;
     if (!record.decision_context.empty()) {
-      rendered.messages.push_back(
-          Message::User(std::string(kDecisionContextLabel) + "\n" +
-                        record.decision_context));
+      rendered.messages.push_back(Message::User(
+          std::string(kDecisionContextLabel) + "\n" + record.decision_context));
     }
     rendered.messages.push_back(record.assistant);
     for (const Message& result : record.command_results) {
@@ -133,9 +133,11 @@ RenderedContext Context::Render(RenderBudget budget) const {
         std::string(kCurrentContextLabel) + "\n" + current_context_));
   }
 
-  rendered.estimated_tokens = budget.fixed_tokens + used_tokens + trailing_tokens;
-  rendered.exceeds_budget =
-      budgeted && rendered.estimated_tokens > budget.max_input_tokens;
+  // History is expendable: when it does not fit, it is dropped rather than the
+  // request being refused. Only the essential content (system prompt, command
+  // schemas, current state) can make a request impossible.
+  rendered.estimated_tokens = fixed + used_tokens;
+  rendered.exceeds_budget = budgeted && fixed > budget.max_input_tokens;
   return rendered;
 }
 
