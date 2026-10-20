@@ -189,7 +189,8 @@ class Param {
 
   /// Inclusive numeric bounds.
   template <typename U = T,
-            typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+            typename = std::enable_if_t<std::is_arithmetic_v<U> &&
+                                        !std::is_same_v<U, bool>>>
   Param& Range(T minimum, T maximum) {
     minimum_ = static_cast<double>(minimum);
     maximum_ = static_cast<double>(maximum);
@@ -197,14 +198,16 @@ class Param {
   }
 
   template <typename U = T,
-            typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+            typename = std::enable_if_t<std::is_arithmetic_v<U> &&
+                                        !std::is_same_v<U, bool>>>
   Param& Min(T value) {
     minimum_ = static_cast<double>(value);
     return *this;
   }
 
   template <typename U = T,
-            typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+            typename = std::enable_if_t<std::is_arithmetic_v<U> &&
+                                        !std::is_same_v<U, bool>>>
   Param& Max(T value) {
     maximum_ = static_cast<double>(value);
     return *this;
@@ -307,8 +310,15 @@ CommandParameters<Args...> Params(Param<Args>... params) {
 ///
 /// The schema is the object a provider sends as the command's parameters; it
 /// only ever uses constraints the SDK validator implements, so a schema the SDK
-/// generates is always one it can enforce.
+/// generates is always one it can enforce. Optional parameters are nullable,
+/// and stay out of `required`.
 std::string BuildCommandSchema(
     const std::vector<ParameterDescriptor>& parameters);
+
+/// Rewrites a generated schema into OpenAI's strict dialect: every property
+/// of every object is added to `required` and `additionalProperties` is
+/// disabled. Optional parameters are already nullable, so this is safe.
+/// A schema that does not parse is returned unchanged.
+std::string ToStrictSchema(const std::string& schema_json);
 
 }  // namespace llm

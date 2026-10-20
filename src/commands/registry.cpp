@@ -7,6 +7,58 @@
 #include <vector>
 
 namespace llm {
+namespace {
+
+bool ValidateParameter(const std::string& command_name,
+                       const ParameterDescriptor& parameter,
+                       std::string& error) {
+  const auto fail = [&](std::string message) {
+    error = "command '" + command_name + "', parameter '" + parameter.name +
+            "': " + std::move(message);
+    return false;
+  };
+
+  // An optional parameter must say what it means when the model leaves it
+  // out; otherwise binding would silently value-initialize it.
+  if (!parameter.required && !parameter.default_json.has_value()) {
+    return fail(
+        "an optional parameter needs a default value or must be "
+        "required");
+  }
+  if (parameter.minimum.has_value() && parameter.maximum.has_value() &&
+      *parameter.minimum > *parameter.maximum) {
+    return fail("minimum is greater than maximum");
+  }
+  if (parameter.min_length.has_value() && parameter.max_length.has_value() &&
+      *parameter.min_length > *parameter.max_length) {
+    return fail("minLength is greater than maxLength");
+  }
+  if ((parameter.min_length.has_value() && *parameter.min_length < 0) ||
+      (parameter.max_length.has_value() && *parameter.max_length < 0)) {
+    return fail("string length bounds must not be negative");
+  }
+  if (parameter.min_items.has_value() && parameter.max_items.has_value() &&
+      *parameter.min_items > *parameter.max_items) {
+    return fail("minItems is greater than maxItems");
+  }
+  if ((parameter.min_items.has_value() && *parameter.min_items < 0) ||
+      (parameter.max_items.has_value() && *parameter.max_items < 0)) {
+    return fail("item count bounds must not be negative");
+  }
+
+  if (parameter.default_json.has_value()) {
+    const std::string wrapped = "{\"" + EscapeJsonString(parameter.name) +
+                                "\":" + *parameter.default_json + "}";
+    const CommandArguments args = ParseCommandArguments(wrapped);
+    std::string detail;
+    if (!args.valid() || !CheckArgumentConstraints(args, parameter, detail)) {
+      return fail("the default value is invalid: " + detail);
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 CommandRegistrationResult CommandRegistry::Add(RegisteredCommand command) {
   CommandRegistrationResult result;
@@ -19,8 +71,8 @@ CommandRegistrationResult CommandRegistry::Add(RegisteredCommand command) {
   for (const RegisteredCommand& existing : commands_) {
     if (existing.definition.name == command.definition.name) {
       result.status = RegistrationStatus::DuplicateName;
-      result.error = "command '" + command.definition.name +
-                     "' is already registered";
+      result.error =
+          "command '" + command.definition.name + "' is already registered";
       return result;
     }
   }
@@ -42,10 +94,16 @@ CommandRegistrationResult CommandRegistry::Add(RegisteredCommand command) {
       }
     }
   }
+  for (const ParameterDescriptor& parameter : command.parameters) {
+    if (!ValidateParameter(command.definition.name, parameter, result.error)) {
+      result.status = RegistrationStatus::InvalidParameter;
+      return result;
+    }
+  }
   if (!command.bind) {
     result.status = RegistrationStatus::InvalidParameter;
-    result.error = "command '" + command.definition.name +
-                   "' has no argument decoder";
+    result.error =
+        "command '" + command.definition.name + "' has no argument decoder";
     return result;
   }
 

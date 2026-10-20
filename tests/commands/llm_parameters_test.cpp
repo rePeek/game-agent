@@ -2,8 +2,11 @@
 // generated schema is checked through the validator rather than by parsing JSON
 // here, so this binary needs no JSON library.
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -33,16 +36,14 @@ ModelRequest RequestWith(std::vector<CommandDefinition> commands) {
 }
 
 TEST(LlmParametersTest, DescriptorsCarryTypeNameAndConstraints) {
-  const auto params =
-      Params(Param<int>("intensity")
-                 .Description("Pressing intensity")
-                 .Range(0, 5)
-                 .Required(),
-             Param<std::string>("formation")
-                 .OneOf("4-3-3", "4-4-2", "3-5-2")
-                 .Optional(),
-             Param<double>("risk"),
-             Param<bool>("aggressive"));
+  const auto params = Params(Param<int>("intensity")
+                                 .Description("Pressing intensity")
+                                 .Range(0, 5)
+                                 .Required(),
+                             Param<std::string>("formation")
+                                 .OneOf("4-3-3", "4-4-2", "3-5-2")
+                                 .Optional(),
+                             Param<double>("risk"), Param<bool>("aggressive"));
 
   const std::vector<ParameterDescriptor> descriptors = params.Descriptors();
   ASSERT_EQ(descriptors.size(), 4u);
@@ -72,18 +73,20 @@ TEST(LlmParametersTest, DefaultsImplyOptionalAndAreSerialized) {
 }
 
 TEST(LlmParametersTest, GeneratedSchemaIsOneTheValidatorCanEnforce) {
-  const auto params =
-      Params(Param<int>("intensity").Range(0, 5).Required(),
-             Param<std::string>("formation")
-                 .OneOf("4-3-3", "4-4-2")
-                 .Optional());
+  const auto params = Params(
+      Param<int>("intensity").Range(0, 5).Required(),
+      Param<std::string>("formation").OneOf("4-3-3", "4-4-2").Optional());
 
   const std::string schema = BuildCommandSchema(params.Descriptors());
   EXPECT_NE(schema.find("\"required\":[\"intensity\"]"), std::string::npos)
       << schema;
   EXPECT_NE(schema.find("\"minimum\":0"), std::string::npos) << schema;
   EXPECT_NE(schema.find("\"maximum\":5"), std::string::npos) << schema;
-  EXPECT_NE(schema.find("\"enum\":[\"4-3-3\",\"4-4-2\"]"), std::string::npos)
+  // The optional parameter is nullable and its allowed set includes null.
+  EXPECT_NE(schema.find("\"type\":[\"string\",\"null\"]"), std::string::npos)
+      << schema;
+  EXPECT_NE(schema.find("\"enum\":[\"4-3-3\",\"4-4-2\",null]"),
+            std::string::npos)
       << schema;
   EXPECT_NE(schema.find("\"additionalProperties\":false"), std::string::npos)
       << schema;
@@ -104,14 +107,14 @@ TEST(LlmParametersTest, GeneratedSchemaIsOneTheValidatorCanEnforce) {
                    .Validate(request, {CommandCall{"c1", "set_pressing",
                                                    R"({"intensity":9})"}})
                    .ok);
-  EXPECT_FALSE(validator
-                   .Validate(request, {CommandCall{"c1", "set_pressing",
-                                                   R"({})"}})
-                   .ok);
+  EXPECT_FALSE(
+      validator.Validate(request, {CommandCall{"c1", "set_pressing", R"({})"}})
+          .ok);
   EXPECT_FALSE(
       validator
-          .Validate(request, {CommandCall{"c1", "set_pressing",
-                                          R"({"intensity":1,"formation":"x"})"}})
+          .Validate(request,
+                    {CommandCall{"c1", "set_pressing",
+                                 R"({"intensity":1,"formation":"x"})"}})
           .ok);
 }
 
@@ -182,6 +185,43 @@ TEST(LlmParametersTest, ValueTypeNamesMatchJsonSchema) {
   EXPECT_STREQ(ToString(CommandValueType::Number), "number");
   EXPECT_STREQ(ToString(CommandValueType::Array), "array");
   EXPECT_STREQ(ToString(CommandValueType::Object), "object");
+}
+
+template <typename T, typename = void>
+struct HasNumericRange : std::false_type {};
+template <typename T>
+struct HasNumericRange<T, std::void_t<decltype(std::declval<T&>().Range(0, 1))>>
+    : std::true_type {};
+
+TEST(LlmParametersTest, NarrowingWouldBeLossyAndIsRejected) {
+  const CommandArguments args =
+      ParseCommandArguments(R"({"big":4294967296,"neg":-1,"huge":1e300})");
+  bool present = false;
+  std::string error;
+
+  std::int32_t small = 0;
+  EXPECT_FALSE(ReadArgument(args, "big", small, present, error));
+  EXPECT_NE(error.find("out of range"), std::string::npos);
+
+  std::uint32_t unsigned_value = 0;
+  EXPECT_FALSE(ReadArgument(args, "neg", unsigned_value, present, error));
+  EXPECT_NE(error.find("out of range"), std::string::npos);
+
+  float single = 0.0f;
+  EXPECT_FALSE(ReadArgument(args, "huge", single, present, error));
+  EXPECT_NE(error.find("out of range"), std::string::npos);
+
+  const CommandArguments in_range = ParseCommandArguments(R"({"big":42})");
+  EXPECT_TRUE(ReadArgument(in_range, "big", small, present, error));
+  EXPECT_EQ(small, 42);
+}
+
+TEST(LlmParametersTest, BooleanParametersHaveNoNumericRange) {
+  static_assert(!HasNumericRange<Param<bool>>::value,
+                "Range must not compile for a bool parameter");
+  static_assert(HasNumericRange<Param<int>>::value,
+                "Range must compile for an integer parameter");
+  SUCCEED();
 }
 
 }  // namespace

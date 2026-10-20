@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "llm/commands/parameter.hpp"
+
 namespace llm {
 namespace openai {
 namespace detail {
@@ -132,7 +134,8 @@ const char* WireRole(Role role) {
 }
 
 BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
-                                        ParameterDialect dialect) {
+                                        ParameterDialect dialect,
+                                        bool enforce_strict) {
   BuildOutcome outcome;
 
   if (request.model.empty()) {
@@ -160,9 +163,12 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
         outcome.error = "every tool definition needs a name";
         return outcome;
       }
+      const bool strict = command.strict && enforce_strict;
+      const std::string schema_text =
+          strict ? ToStrictSchema(command.parameters_schema_json)
+                 : command.parameters_schema_json;
       nlohmann::json parameters;
-      if (!ParseSchema(command.parameters_schema_json, command.name, parameters,
-                       outcome.error)) {
+      if (!ParseSchema(schema_text, command.name, parameters, outcome.error)) {
         return outcome;
       }
       nlohmann::json function{{"name", command.name},
@@ -170,7 +176,7 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
       if (!command.description.empty()) {
         function["description"] = command.description;
       }
-      if (command.strict) {
+      if (strict) {
         function["strict"] = true;
       }
       tools.push_back(

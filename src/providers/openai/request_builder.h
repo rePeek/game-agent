@@ -27,9 +27,15 @@ struct BuildOutcome {
 ///  * the token limit field and the sampling controls follow the endpoint's
 ///    ParameterDialect: reasoning-first families take `max_completion_tokens`
 ///    and reject temperature/top_p/seed on Chat Completions.
+///  * a command marked `strict` is emitted with `strict: true` and, when the
+///    provider can enforce it (`enforce_strict`), a schema rewritten into
+///    OpenAI's strict dialect (all properties required, optional ones
+///    nullable). A provider that cannot enforce strict sends the logical
+///    schema and no `strict` flag, so SDK-side validation is the guarantee.
 BuildOutcome BuildChatCompletionRequest(
     const ModelRequest& request,
-    ParameterDialect dialect = ParameterDialect::Auto);
+    ParameterDialect dialect = ParameterDialect::Auto,
+    bool enforce_strict = true);
 
 /// Wire spelling of a role ("system"/"user"/"assistant"/"tool").
 const char* WireRole(Role role);

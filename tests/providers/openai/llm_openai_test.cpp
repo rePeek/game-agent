@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <llm/commands/parameter.hpp>
 #include <llm/providers/openai/openai.h>
 #include <nlohmann/json.hpp>
 
@@ -129,7 +130,7 @@ nlohmann::json CommandCallsMessage(
 nlohmann::json TwoCallsMessage() {
   nlohmann::json message =
       CommandCallsMessage({{"call_001", "set_pressing_intensity"},
-                        {"call_002", "set_defensive_line"}});
+                           {"call_002", "set_defensive_line"}});
   message["tool_calls"][0]["function"]["arguments"] = kRawFirstArguments;
   message["tool_calls"][1]["function"]["arguments"] = kRawSecondArguments;
   return message;
@@ -215,18 +216,62 @@ TEST(LlmOpenAIBuilderTest, StrictIsOmittedWhenNotRequested) {
   EXPECT_FALSE(built.body["tools"][0]["function"].contains("strict"));
 }
 
+TEST(LlmOpenAIBuilderTest, StrictSchemaMakesEveryPropertyRequired) {
+  CommandDefinition tool;
+  tool.name = "set_formation";
+  tool.description = "formation";
+  tool.parameters_schema_json =
+      BuildCommandSchema(Params(Param<int>("level").Range(1, 5).Required(),
+                                Param<std::string>("formation")
+                                    .OneOf("4-3-3", "4-4-2")
+                                    .Default("4-4-2"))
+                             .Descriptors());
+  tool.strict = true;
+
+  ModelRequest request = MakeRequest();
+  request.commands = {tool};
+
+  const detail::BuildOutcome built =
+      detail::BuildChatCompletionRequest(request);
+  ASSERT_TRUE(built.ok) << built.error;
+  const nlohmann::json& parameters =
+      built.body["tools"][0]["function"]["parameters"];
+  // OpenAI strict mode requires every property to be listed...
+  ASSERT_EQ(parameters["required"].size(), 2u);
+  // ... and expresses the optional one as nullable.
+  const nlohmann::json& formation = parameters["properties"]["formation"];
+  EXPECT_EQ(formation["type"], nlohmann::json::array({"string", "null"}));
+  bool enum_has_null = false;
+  for (const auto& value : formation["enum"]) {
+    enum_has_null = enum_has_null || value.is_null();
+  }
+  EXPECT_TRUE(enum_has_null);
+  // `default` is not in OpenAI's strict subset.
+  EXPECT_FALSE(formation.contains("default"));
+}
+
+TEST(LlmOpenAIBuilderTest, StrictIsNotClaimedWhenTheProviderCannotEnforceIt) {
+  ModelRequest request = MakeRequest();
+  const detail::BuildOutcome built = detail::BuildChatCompletionRequest(
+      request, ParameterDialect::Auto, /*enforce_strict=*/false);
+  ASSERT_TRUE(built.ok) << built.error;
+  EXPECT_FALSE(built.body["tools"][0]["function"].contains("strict"));
+}
+
 // The round trip the SDK exists for: a previous decision (assistant tool calls
 // plus their results) must serialize back into an OpenAI-compatible context.
 TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
   CommandResult applied;
   applied.command_call_id = "call_001";
   applied.name = "set_pressing_intensity";
-  applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
+  applied.outcome.success = true;
+  applied.outcome.content_json = R"({"applied":true})";
 
   CommandResult applied_second;
   applied_second.command_call_id = "call_002";
   applied_second.name = "set_defensive_line";
-  applied_second.outcome.success = true; applied_second.outcome.content_json = R"({"applied":true})";
+  applied_second.outcome.success = true;
+  applied_second.outcome.content_json = R"({"applied":true})";
 
   ModelRequest request;
   request.model = models::kGpt56;
@@ -268,7 +313,8 @@ TEST(LlmOpenAIBuilderTest, SerializesPreviousDecisionAsContext) {
   const auto& tool_message = built.body["messages"][3];
   EXPECT_EQ(tool_message["role"], "tool");
   EXPECT_EQ(tool_message["tool_call_id"], "call_001");
-  EXPECT_EQ(tool_message["content"], R"({"ok":true,"result":{"applied":true}})");
+  EXPECT_EQ(tool_message["content"],
+            R"({"ok":true,"result":{"applied":true}})");
   EXPECT_FALSE(tool_message.contains("name"))
       << "OpenAI tool messages carry no name";
 
@@ -820,7 +866,8 @@ TEST(LlmOpenAIProtocolTest, PreviousDecisionRoundTripsThroughTheProvider) {
     CommandResult applied;
     applied.command_call_id = call.id;
     applied.name = call.name;
-    applied.outcome.success = true; applied.outcome.content_json = R"({"applied":true})";
+    applied.outcome.success = true;
+    applied.outcome.content_json = R"({"applied":true})";
     second.messages.push_back(Message::CommandResultMessage(applied));
   }
   second.messages.push_back(Message::User("Opponent switched to a low block."));

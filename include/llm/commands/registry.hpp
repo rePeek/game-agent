@@ -15,8 +15,6 @@
 /// the argument binding into a zero-argument callable — is derived from that
 /// one declaration, so the schema and the decoder can never disagree.
 
-#include "llm/commands/arguments.hpp"
-#include "llm/commands/parameter.hpp"
 #include "llm/core/request.h"
 #include "llm/core/types.h"
 
@@ -30,6 +28,9 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "llm/commands/arguments.hpp"
+#include "llm/commands/parameter.hpp"
 
 namespace llm {
 
@@ -104,6 +105,11 @@ bool DecodeOne(const CommandArguments& args,
                const std::optional<T>& fallback,
                T& value,
                std::string& error) {
+  // The declared contract is enforced here, not only by the provider's own
+  // schema validation: preparing is the SDK's last gate before a callback.
+  if (!CheckArgumentConstraints(args, descriptor, error)) {
+    return false;
+  }
   bool present = false;
   if (!ReadArgument<T>(args, descriptor.name, value, present, error)) {
     return false;
@@ -111,12 +117,13 @@ bool DecodeOne(const CommandArguments& args,
   if (present) {
     return true;
   }
-  if (descriptor.required) {
-    error = "missing required argument '" + descriptor.name + "'";
-    return false;
-  }
   if (fallback.has_value()) {
     value = *fallback;
+  } else {
+    // A non-required parameter must have a default; the registry rejects a
+    // definition that does not, so this is unreachable for registered
+    // commands and the value stays value-initialized otherwise.
+    value = T{};
   }
   return true;
 }
@@ -158,31 +165,31 @@ RegisteredCommand MakeRegisteredCommand(std::string name,
 
   const std::vector<ParameterDescriptor> descriptors = command.parameters;
   auto defaults = parameters.Defaults();
-  command.bind =
-      [callback = std::forward<Fn>(callback), descriptors,
-       defaults = std::move(defaults)](const std::string& arguments_json) {
-        CommandBinding binding;
-        const CommandArguments args = ParseCommandArguments(arguments_json);
-        if (!args.valid()) {
-          binding.error = args.error();
-          return binding;
-        }
-        if (descriptors.size() != sizeof...(Args)) {
-          binding.error = "internal error: parameter description mismatch";
-          return binding;
-        }
-        std::tuple<Args...> values{};
-        if (!command_detail::DecodeAll(args, descriptors, defaults, values,
-                                       binding.error,
-                                       std::index_sequence_for<Args...>{})) {
-          return binding;
-        }
-        binding.ok = true;
-        binding.invoke = [callback, values = std::move(values)]() mutable {
-          return command_detail::InvokeCallback<Fn, Args...>(callback, values);
-        };
-        return binding;
-      };
+  command.bind = [callback = std::forward<Fn>(callback), descriptors,
+                  defaults =
+                      std::move(defaults)](const std::string& arguments_json) {
+    CommandBinding binding;
+    const CommandArguments args = ParseCommandArguments(arguments_json);
+    if (!args.valid()) {
+      binding.error = args.error();
+      return binding;
+    }
+    if (descriptors.size() != sizeof...(Args)) {
+      binding.error = "internal error: parameter description mismatch";
+      return binding;
+    }
+    std::tuple<Args...> values{};
+    if (!command_detail::DecodeAll(args, descriptors, defaults, values,
+                                   binding.error,
+                                   std::index_sequence_for<Args...>{})) {
+      return binding;
+    }
+    binding.ok = true;
+    binding.invoke = [callback, values = std::move(values)]() mutable {
+      return command_detail::InvokeCallback<Fn, Args...>(callback, values);
+    };
+    return binding;
+  };
   return command;
 }
 

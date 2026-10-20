@@ -179,8 +179,9 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
 
   // 2. Build the request. A malformed request is the caller's error and is
   //    reported as such before anything else is checked.
-  detail::BuildOutcome built =
-      detail::BuildChatCompletionRequest(request, options_.parameter_dialect);
+  detail::BuildOutcome built = detail::BuildChatCompletionRequest(
+      request, options_.parameter_dialect,
+      options_.capabilities.strict_command_schema);
   if (!built.ok) {
     log(LogLevel::Error, log_event::kRequestFailed,
         "kind=invalid request, attempts=0, message=" + built.error);
@@ -199,10 +200,10 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
           "the request uses a command schema that cannot be enforced: " +
               schemas.Summary());
       result.status = CompletionStatus::Unsupported;
-      result.error =
-          MakeError(ErrorKind::Unsupported,
-                    "the request uses a command schema that cannot be enforced: " +
-                        schemas.Summary());
+      result.error = MakeError(
+          ErrorKind::Unsupported,
+          "the request uses a command schema that cannot be enforced: " +
+              schemas.Summary());
       return result;
     }
   }
@@ -319,11 +320,11 @@ CompletionResult OpenAIProvider::Complete(const ModelRequest& request) {
         MakeError(ErrorKind::InvalidRequest, parsed.refusal, response.status);
   } else if (result.finish_reason == FinishReason::Length) {
     result.status = CompletionStatus::Truncated;
-    result.error = MakeError(
-        ErrorKind::InvalidRequest,
-        "completion was cut off by the token limit before the command calls were "
-        "complete",
-        response.status);
+    result.error = MakeError(ErrorKind::InvalidRequest,
+                             "completion was cut off by the token limit before "
+                             "the command calls were "
+                             "complete",
+                             response.status);
   } else if (result.finish_reason == FinishReason::ContentFilter) {
     result.status = CompletionStatus::Refused;
     result.error = MakeError(ErrorKind::InvalidRequest,

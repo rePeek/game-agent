@@ -46,7 +46,7 @@ TEST(LlmRegistryTest, RefusesEmptyAndDuplicateNames) {
   CommandRegistry registry;
   const auto make = [](const std::string& name) {
     return MakeRegisteredCommand(
-        name, "", Params(Param<int>("level")),
+        name, "", Params(Param<int>("level").Required()),
         [](int) { return CommandOutcome{true, {}, {}}; });
   };
 
@@ -60,11 +60,8 @@ TEST(LlmRegistryTest, RefusesEmptyAndDuplicateNames) {
 TEST(LlmRegistryTest, RefusesADuplicatedParameterName) {
   CommandRegistry registry;
   const CommandRegistrationResult result = registry.Add(MakeRegisteredCommand(
-      "bad", "",
-      Params(Param<int>("level"), Param<std::string>("level")),
-      [](int, const std::string&) {
-        return CommandOutcome{true, {}, {}};
-      }));
+      "bad", "", Params(Param<int>("level"), Param<std::string>("level")),
+      [](int, const std::string&) { return CommandOutcome{true, {}, {}}; }));
   EXPECT_EQ(result.status, RegistrationStatus::InvalidParameter);
   EXPECT_NE(result.error.find("more than once"), std::string::npos);
 }
@@ -124,14 +121,14 @@ TEST(LlmRegistryTest, RejectsMissingWrongTypedAndMalformedArguments) {
 
 TEST(LlmRegistryTest, DefaultsFillAbsentArguments) {
   CommandRegistry registry;
-  ASSERT_TRUE(registry
-                  .Add(MakeRegisteredCommand(
-                      "set_pressing", "",
-                      Params(Param<int>("level").Default(3)),
-                      [](int level) -> CommandOutcome {
-                        return CommandOutcome{true, std::to_string(level), {}};
-                      }))
-                  .ok());
+  ASSERT_TRUE(
+      registry
+          .Add(MakeRegisteredCommand(
+              "set_pressing", "", Params(Param<int>("level").Default(3)),
+              [](int level) -> CommandOutcome {
+                return CommandOutcome{true, std::to_string(level), {}};
+              }))
+          .ok());
   const RegisteredCommand* command = registry.Find("set_pressing");
 
   const CommandBinding binding = command->bind("{}");
@@ -147,9 +144,8 @@ TEST(LlmRegistryTest, VoidCallbacksBecomeSuccessfulResultlessCommands) {
   bool ran = false;
   CommandRegistry registry;
   ASSERT_TRUE(registry
-                  .Add(MakeRegisteredCommand(
-                      "no_args", "", Params(),
-                      [&ran]() { ran = true; }))
+                  .Add(MakeRegisteredCommand("no_args", "", Params(),
+                                             [&ran]() { ran = true; }))
                   .ok());
   const CommandBinding binding = registry.Find("no_args")->bind("{}");
   ASSERT_TRUE(binding.ok) << binding.error;
@@ -158,6 +154,68 @@ TEST(LlmRegistryTest, VoidCallbacksBecomeSuccessfulResultlessCommands) {
   EXPECT_TRUE(ran);
   EXPECT_TRUE(outcome.success);
   EXPECT_TRUE(outcome.content_json.empty());
+}
+
+TEST(LlmRegistryTest, RefusesAnOptionalParameterWithoutADefault) {
+  CommandRegistry registry;
+  const CommandRegistrationResult result = registry.Add(
+      MakeRegisteredCommand("c", "", Params(Param<int>("x")),
+                            [](int) { return CommandOutcome{true, {}, {}}; }));
+  EXPECT_EQ(result.status, RegistrationStatus::InvalidParameter);
+  EXPECT_NE(result.error.find("default"), std::string::npos);
+}
+
+TEST(LlmRegistryTest, RefusesInconsistentOrInvalidDeclarations) {
+  CommandRegistry registry;
+
+  // minimum > maximum
+  EXPECT_EQ(registry
+                .Add(MakeRegisteredCommand(
+                    "c", "", Params(Param<int>("x").Range(5, 1).Required()),
+                    [](int) { return CommandOutcome{true, {}, {}}; }))
+                .status,
+            RegistrationStatus::InvalidParameter);
+
+  // a default that violates its own range
+  EXPECT_EQ(registry
+                .Add(MakeRegisteredCommand(
+                    "d", "", Params(Param<int>("x").Range(0, 5).Default(99)),
+                    [](int) { return CommandOutcome{true, {}, {}}; }))
+                .status,
+            RegistrationStatus::InvalidParameter);
+
+  // a default outside the allowed set
+  EXPECT_EQ(
+      registry
+          .Add(MakeRegisteredCommand(
+              "e", "",
+              Params(Param<std::string>("x").OneOf("a", "b").Default("z")),
+              [](const std::string&) { return CommandOutcome{true, {}, {}}; }))
+          .status,
+      RegistrationStatus::InvalidParameter);
+}
+
+TEST(LlmRegistryTest, RejectsBindingContractsWhenNoProviderValidated) {
+  CommandRegistry registry;
+  ASSERT_TRUE(registry
+                  .Add(MakeRegisteredCommand(
+                      "set_pressing", "",
+                      Params(Param<int>("level").Range(1, 5).Required(),
+                             Param<std::string>("code")
+                                 .OneOf("chasing", "stable")
+                                 .Required()),
+                      [](int, const std::string&) {
+                        return CommandOutcome{true, {}, {}};
+                      }))
+                  .ok());
+  const RegisteredCommand* command = registry.Find("set_pressing");
+
+  const CommandBinding too_high =
+      command->bind(R"({"level":9,"code":"chasing"})");
+  EXPECT_FALSE(too_high.ok);
+  EXPECT_NE(too_high.error.find("at most"), std::string::npos);
+  EXPECT_TRUE(command->bind(R"({"level":1,"code":"chasing"})").ok);
+  EXPECT_FALSE(command->bind(R"({"level":1,"code":"x"})").ok);
 }
 
 }  // namespace
