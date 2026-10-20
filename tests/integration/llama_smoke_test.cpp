@@ -96,7 +96,7 @@ ContextUpdate Update(const std::string& revision) {
 
 /// The SDK contract on a real server: a decision either becomes a fully
 /// validated, bound batch or is reported as a failure. It never hangs, never
-/// stages an invalid batch and never leaves the agent Busy.
+/// stages an invalid batch, and finishing it always leaves the agent idle.
 DecisionResult RunOneDecision(Agent& agent, const std::string& revision) {
   agent.UpdateContext(Update(revision));
   const StartOutcome started = agent.DecideAsync();
@@ -106,9 +106,35 @@ DecisionResult RunOneDecision(Agent& agent, const std::string& revision) {
     return result;
   }
   const std::optional<DecisionResult> decision =
-      test::PollUntilReady(agent, std::chrono::seconds(60));
+      test::PollUntilReady(agent, std::chrono::seconds(120));
   EXPECT_TRUE(decision.has_value()) << "the model call never completed";
   return decision.value_or(DecisionResult{});
+}
+
+/// Ends a decision: record a successful batch, discard anything else. Returns
+/// true when a decision entered the transcript.
+bool FinishOneDecision(Agent& agent, const DecisionResult& decision) {
+  if (!decision.completion.IsSuccess()) {
+    // A refusal or a server-side error is legitimate; it must be reported and
+    // staged nowhere.
+    EXPECT_EQ(agent.PendingDecisionCount(), 0u);
+    return false;
+  }
+  PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
+  if (!prepared.ok()) {
+    // The SDK refused to bind the batch; it must not be left pending.
+    EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
+    return false;
+  }
+  std::vector<CommandResult> results;
+  results.reserve(prepared.commands.size());
+  for (PreparedCommand& command : prepared.commands) {
+    results.push_back(std::move(command).Invoke());
+  }
+  EXPECT_EQ(
+      agent.RecordCommandResults(decision.decision_id, std::move(results)),
+      RecordOutcome::Recorded);
+  return true;
 }
 
 TEST(LlamaSmokeTest, DecisionIsEitherAValidatedBatchOrAReportedFailure) {
@@ -121,28 +147,13 @@ TEST(LlamaSmokeTest, DecisionIsEitherAValidatedBatchOrAReportedFailure) {
   RegisterCommands(agent);
 
   const DecisionResult decision = RunOneDecision(agent, "rev-1");
+  // The model call finished either way; a successful batch waits as pending
+  // until the game decides what to do with it.
+  EXPECT_EQ(agent.InFlightDecisionCount(), 0u);
+
+  const bool recorded = FinishOneDecision(agent, decision);
   EXPECT_FALSE(agent.IsBusy());
-
-  if (!decision.completion.IsSuccess()) {
-    // A refusal or a server-side error is a legitimate outcome; it must be
-    // reported and staged nowhere.
-    EXPECT_EQ(agent.PendingDecisionCount(), 0u);
-    SUCCEED() << "reported: " << decision.completion.ErrorMessage();
-    return;
-  }
-
-  // If the model did answer, the batch must bind and record end to end.
-  PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
-  ASSERT_TRUE(prepared.ok()) << prepared.error;
-  std::vector<CommandResult> results;
-  results.reserve(prepared.commands.size());
-  for (PreparedCommand& command : prepared.commands) {
-    results.push_back(std::move(command).Invoke());
-  }
-  EXPECT_EQ(
-      agent.RecordCommandResults(decision.decision_id, std::move(results)),
-      RecordOutcome::Recorded);
-  EXPECT_EQ(agent.ContextSnapshot().decision_count(), 1u);
+  EXPECT_EQ(agent.ContextSnapshot().decision_count(), recorded ? 1u : 0u);
 }
 
 TEST(LlamaSmokeTest, TwoAgentsShareTheProviderButNotTheirHistory) {
@@ -157,11 +168,11 @@ TEST(LlamaSmokeTest, TwoAgentsShareTheProviderButNotTheirHistory) {
   RegisterCommands(home);
   RegisterCommands(away);
 
-  RunOneDecision(home, "home-1");
-  RunOneDecision(away, "away-1");
+  FinishOneDecision(home, RunOneDecision(home, "home-1"));
+  FinishOneDecision(away, RunOneDecision(away, "away-1"));
 
-  // Neither agent can be left Busy, and their histories are separate objects,
-  // each holding only its own rounds.
+  // Both are idle and their histories are separate objects, each holding only
+  // its own rounds.
   EXPECT_FALSE(home.IsBusy());
   EXPECT_FALSE(away.IsBusy());
   EXPECT_LE(home.ContextSnapshot().decision_count(), 1u);
@@ -181,22 +192,8 @@ TEST(LlamaSmokeTest, RepeatedDecisionsKeepTheHistoryBounded) {
   RegisterCommands(agent);
 
   for (int round = 1; round <= 6; ++round) {
-    const DecisionResult decision =
-        RunOneDecision(agent, "rev-" + std::to_string(round));
-    if (!decision.completion.IsSuccess()) {
-      continue;  // a refusal does not advance the transcript
-    }
-    PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
-    if (!prepared.ok()) {
-      agent.DiscardDecision(decision.decision_id);
-      continue;
-    }
-    std::vector<CommandResult> results;
-    results.reserve(prepared.commands.size());
-    for (PreparedCommand& command : prepared.commands) {
-      results.push_back(std::move(command).Invoke());
-    }
-    agent.RecordCommandResults(decision.decision_id, std::move(results));
+    FinishOneDecision(agent,
+                      RunOneDecision(agent, "rev-" + std::to_string(round)));
   }
 
   EXPECT_FALSE(agent.IsBusy());

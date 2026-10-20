@@ -401,7 +401,7 @@ One optional test talks to a real OpenAI-compatible server (for example a local
 ```bash
 export GAME_AGENT_LLAMA_BASE_URL=http://127.0.0.1:8080
 export GAME_AGENT_LLAMA_MODEL=<model-id>
-ctest --preset debug -R llama_smoke --output-on-failure
+ctest --preset debug -R LlamaSmoke --output-on-failure
 ```
 
 For a real API key, copy `.env.example` to `.env` (direnv loads it into the

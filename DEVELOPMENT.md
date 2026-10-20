@@ -156,7 +156,7 @@ the owner-thread Agent (`DecideAsync`/`PollDecision`).
 ```bash
 GAME_AGENT_LLAMA_BASE_URL=http://127.0.0.1:8080 \
 GAME_AGENT_LLAMA_MODEL=<model-id> \
-  ctest --preset debug -R llama_smoke --output-on-failure
+  ctest --preset debug -R LlamaSmoke --output-on-failure
 ```
 
 The manual `Live API smoke` GitHub workflow runs the same test against a real

@@ -11,8 +11,11 @@ include(GoogleTest)
 # at the caller's module directory.
 set(LLM_TEST_SUPPORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/support)
 
+# add_llm_test(<name> [TIMEOUT <seconds>] <sources...>)
+# TIMEOUT defaults to 30; the optional live server tests raise it.
 function(add_llm_test name)
-    add_executable(${name} ${ARGN})
+    cmake_parse_arguments(ARG "" "TIMEOUT" "" ${ARGN})
+    add_executable(${name} ${ARG_UNPARSED_ARGUMENTS})
     target_include_directories(${name} PRIVATE ${LLM_TEST_SUPPORT_DIR})
     target_compile_options(${name} PRIVATE -Wall -Wextra)
     target_link_libraries(${name}
@@ -21,10 +24,13 @@ function(add_llm_test name)
             GTest::gtest_main
             GTest::gmock
     )
+    if(NOT ARG_TIMEOUT)
+        set(ARG_TIMEOUT 30)
+    endif()
     gtest_discover_tests(${name}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         PROPERTIES
-            TIMEOUT 30
+            TIMEOUT ${ARG_TIMEOUT}
     )
 endfunction()
 

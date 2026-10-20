@@ -11,8 +11,9 @@ target_link_libraries(llm_integration_tests
 
 # Optional real-server smoke test. It is skipped unless
 # GAME_AGENT_LLAMA_BASE_URL and GAME_AGENT_LLAMA_MODEL are set, so the
-# offline suite is unaffected.
-add_llm_test(llama_smoke_tests llama_smoke_test.cpp)
+# offline suite is unaffected. A real model is slow, so give it more time
+# than the offline tests.
+add_llm_test(llama_smoke_tests TIMEOUT 300 llama_smoke_test.cpp)
 target_link_libraries(llama_smoke_tests PRIVATE llm::sdk)
 
 # Manual debugging aid: it prints the SDK's event stream through the test-tree
