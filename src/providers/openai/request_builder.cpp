@@ -117,6 +117,44 @@ ParameterDialect ResolveDialect(const std::string& model,
   return DialectForModel(model);
 }
 
+/// OpenAI's strict mode supports only a subset of JSON Schema. A schema using
+/// one of these keywords must not be sent with `strict: true`: the server
+/// would reject it, and the SDK validator's ability to enforce it locally is
+/// not a reason to claim the server did.
+bool UsesStrictUnsupportedKeyword(const nlohmann::json& schema) {
+  if (!schema.is_object()) {
+    return false;
+  }
+  for (const char* keyword : {"allOf", "not", "if", "then", "else",
+                              "dependentRequired", "dependentSchemas"}) {
+    if (schema.contains(keyword)) {
+      return true;
+    }
+  }
+  if (schema.contains("properties") && schema["properties"].is_object()) {
+    for (auto it = schema["properties"].begin();
+         it != schema["properties"].end(); ++it) {
+      if (UsesStrictUnsupportedKeyword(it.value())) {
+        return true;
+      }
+    }
+  }
+  if (schema.contains("items") && schema["items"].is_object() &&
+      UsesStrictUnsupportedKeyword(schema["items"])) {
+    return true;
+  }
+  for (const char* keyword : {"anyOf", "oneOf"}) {
+    if (schema.contains(keyword) && schema[keyword].is_array()) {
+      for (const nlohmann::json& alternative : schema[keyword]) {
+        if (UsesStrictUnsupportedKeyword(alternative)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 const char* WireRole(Role role) {
@@ -169,6 +207,12 @@ BuildOutcome BuildChatCompletionRequest(const ModelRequest& request,
                  : command.parameters_schema_json;
       nlohmann::json parameters;
       if (!ParseSchema(schema_text, command.name, parameters, outcome.error)) {
+        return outcome;
+      }
+      if (strict && UsesStrictUnsupportedKeyword(parameters)) {
+        outcome.error = "command '" + command.name +
+                        "' uses a schema keyword OpenAI's strict mode does "
+                        "not support";
         return outcome;
       }
       nlohmann::json function{{"name", command.name},

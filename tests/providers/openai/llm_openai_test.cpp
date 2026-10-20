@@ -5,6 +5,7 @@
 #include "providers/openai/request_builder.h"
 #include "providers/openai/response_parser.h"
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -1058,6 +1059,103 @@ TEST(LlmOpenAIProviderTest, TimeoutIsForwardedToTheTransport) {
   ASSERT_EQ(fixture.transport->requests.size(), 1u);
   EXPECT_EQ(fixture.transport->requests[0].timeout_seconds, 7);
   EXPECT_EQ(result.error->kind, ErrorKind::Timeout);
+}
+
+TEST(LlmOpenAIProtocolTest, WrongFieldTypesAreParseFailures) {
+  const nlohmann::json envelope = {
+      {"id", "chatcmpl-x"},
+      {"model", "m"},
+      {"choices", nlohmann::json::array({nlohmann::json{
+                      {"index", 0},
+                      {"message", {{"role", "assistant"}, {"content", "hi"}}},
+                      {"finish_reason", "stop"}}})}};
+
+  // A model that is not a string.
+  {
+    nlohmann::json body = envelope;
+    body["model"] = 123;
+    const detail::ParsedCompletion parsed =
+        detail::ParseChatCompletion(body.dump());
+    EXPECT_FALSE(parsed.ok);
+    EXPECT_NE(parsed.error.find("model"), std::string::npos);
+  }
+
+  // A usage field that is not a number.
+  {
+    nlohmann::json body = envelope;
+    body["usage"] = {{"prompt_tokens", "many"}};
+    const detail::ParsedCompletion parsed =
+        detail::ParseChatCompletion(body.dump());
+    EXPECT_FALSE(parsed.ok);
+    EXPECT_NE(parsed.error.find("prompt_tokens"), std::string::npos);
+  }
+
+  // A finish_reason that is not a string.
+  {
+    nlohmann::json body = envelope;
+    body["choices"][0]["finish_reason"] = 7;
+    const detail::ParsedCompletion parsed =
+        detail::ParseChatCompletion(body.dump());
+    EXPECT_FALSE(parsed.ok);
+    EXPECT_NE(parsed.error.find("finish_reason"), std::string::npos);
+  }
+
+  // A tool call id that is not a string.
+  {
+    nlohmann::json body = envelope;
+    body["choices"][0]["finish_reason"] = "tool_calls";
+    body["choices"][0]["message"] = {
+        {"role", "assistant"},
+        {"content", nullptr},
+        {"tool_calls",
+         nlohmann::json::array({nlohmann::json{
+             {"id", 5},
+             {"type", "function"},
+             {"function",
+              {{"name", "set_pressing_intensity"}, {"arguments", "{}"}}}}})}};
+    const detail::ParsedCompletion parsed =
+        detail::ParseChatCompletion(body.dump());
+    EXPECT_FALSE(parsed.ok);
+    EXPECT_NE(parsed.error.find("id"), std::string::npos);
+  }
+}
+
+TEST(LlmOpenAIProtocolTest, StrictRefusesASchemaOpenAICannotEnforce) {
+  CommandDefinition command;
+  command.name = "set_pressing";
+  command.description = "pressing";
+  command.parameters_schema_json =
+      R"({"type":"object","properties":{"level":{"type":"integer"}},"allOf":[{"required":["level"]}],"additionalProperties":false})";
+  command.strict = true;
+
+  ModelRequest request = MakeRequest();
+  request.commands = {command};
+
+  const detail::BuildOutcome built =
+      detail::BuildChatCompletionRequest(request);
+  EXPECT_FALSE(built.ok);
+  EXPECT_NE(built.error.find("strict"), std::string::npos);
+}
+
+TEST(LlmOpenAIProtocolTest, CompatibleEndpointsGetConservativeCapabilities) {
+  const char* previous = std::getenv("OPENAI_BASE_URL");
+  const std::string saved = previous != nullptr ? previous : "";
+
+  setenv("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1", 1);
+  const auto compatible = llm::openai::CreateProviderFromEnvironment();
+  EXPECT_FALSE(compatible->Capabilities().forced_command_choice);
+  EXPECT_FALSE(compatible->Capabilities().strict_command_schema);
+
+  setenv("OPENAI_BASE_URL", "https://api.openai.com", 1);
+  const auto native = llm::openai::CreateProviderFromEnvironment();
+  EXPECT_TRUE(native->Capabilities().forced_command_choice);
+  EXPECT_TRUE(native->Capabilities().strict_command_schema);
+
+  if (previous != nullptr) {
+    setenv("OPENAI_BASE_URL", saved.c_str(), 1);
+  } else {
+    unsetenv("OPENAI_BASE_URL");
+  }
 }
 
 }  // namespace

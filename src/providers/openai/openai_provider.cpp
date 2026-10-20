@@ -392,6 +392,19 @@ std::shared_ptr<IModelProvider> CreateProviderFromEnvironment(
       base_url != nullptr && *base_url != '\0') {
     options.base_url = base_url;
   }
+
+  // OpenAI-compatible says the wire format matches, not that the endpoint
+  // enforces forced command choice or strict schemas. For anything that is not
+  // OpenAI's own host, declare conservative capabilities and let the SDK
+  // validate the output instead. Callers who know their endpoint enforces
+  // them build ProviderOptions themselves and use CreateProvider().
+  const bool native_openai =
+      options.base_url.find("api.openai.com") != std::string::npos;
+  if (!native_openai) {
+    options.capabilities.forced_command_choice = false;
+    options.capabilities.strict_command_schema = false;
+    options.allow_validation_downgrade = true;
+  }
   return CreateProvider(std::move(options));
 }
 
