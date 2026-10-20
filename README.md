@@ -1,6 +1,6 @@
 # game-agent
 
-A C++20 SDK for **structured command calling**: a game registers its own C++
+A C++23 SDK for **structured command calling**: a game registers its own C++
 functions, the model picks them, and the SDK hands back validated, bound
 callables that the game chooses when to run.
 
@@ -401,8 +401,12 @@ One optional test talks to a real OpenAI-compatible server (for example a local
 ```bash
 export GAME_AGENT_LLAMA_BASE_URL=http://127.0.0.1:8080
 export GAME_AGENT_LLAMA_MODEL=<model-id>
-ctest -R llama_smoke --output-on-failure
+ctest --preset debug -R llama_smoke --output-on-failure
 ```
+
+For a real API key, copy `.env.example` to `.env` (direnv loads it into the
+development shell) and set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and
+`OPENAI_MODEL`. CMake never reads the file.
 
 It exercises a single decision, two agents sharing one provider, and repeated
 decisions with a bounded history, asserting that a real server's output is
@@ -410,17 +414,27 @@ either a fully validated, bound batch or a reported failure.
 
 ## Building
 
+The build is driven by CMake presets; Debug and Release use separate build
+directories under `build/`.
+
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
-cmake --build build --parallel
-cmake --install build --prefix /usr/local
+cmake --preset debug        # or: release
+cmake --build --preset debug --parallel
+ctest --preset debug
 ```
 
-`BUILD_EXAMPLES` (default `ON`) and `BUILD_TESTS` (default `OFF`) control the
-optional targets. `scripts/build.py` wraps the same flow for development:
+Formatting is a CMake target (no Python wrapper):
 
 ```bash
-uv run scripts/build.py --mode release --tests --export-compile-commands
+cmake --build --preset debug --target format        # rewrite in place
+cmake --build --preset debug --target format-check  # CI
+```
+
+`BUILD_EXAMPLES` (default `ON`) and CTest's `BUILD_TESTING` (default `ON`
+through the presets) control the optional targets. To install:
+
+```bash
+cmake --install build/release --prefix /usr/local
 ```
 
 ## Using it from another project
@@ -462,8 +476,15 @@ when it links `llm::openai`.
 
 ## Requirements
 
-- C++20 compiler (GCC 10+, Clang 12+, MSVC 2019+)
-- CMake 3.16+
+The project is Linux + GCC only (that is the toolchain its host games use):
+
+- GCC 14 or newer, in C++23 mode (`-std=c++23`);
+- CMake 3.24 or newer;
+- Ninja;
+- OpenSSL (development headers) for `llm::openai`.
+
+`clang-format`, `clang-tidy` and `clangd` are used as tools, never as the
+C++ compiler.
 
 ## Examples
 

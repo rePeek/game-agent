@@ -1,0 +1,41 @@
+name: Live API smoke
+
+# Manual only: talks to a real OpenAI-compatible endpoint using repository
+# secrets. The normal CI never needs an API key.
+on:
+  workflow_dispatch:
+
+jobs:
+  live:
+    name: Live smoke
+    runs-on: ubuntu-latest
+
+    env:
+      CC: gcc-14
+      CXX: g++-14
+      # The smoke test reads GAME_AGENT_LLAMA_*; map the repository configuration
+      # onto it so no key ever reaches a file in the repository.
+      GAME_AGENT_LLAMA_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GAME_AGENT_LLAMA_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+      GAME_AGENT_LLAMA_MODEL: ${{ vars.OPENAI_MODEL }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake ninja-build gcc-14 g++-14 openssl libssl-dev
+
+    - name: Configure
+      run: cmake --preset release
+
+    - name: Build
+      run: cmake --build --preset release --parallel
+
+    - name: Run the live smoke test
+      run: ctest --preset release -R llama_smoke --output-on-failure

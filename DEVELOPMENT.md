@@ -1,207 +1,127 @@
 # Development Guide
 
-This document provides comprehensive information about developing, building, and contributing to AI SDK C++.
+How to build, test and contribute to game-agent.
 
 ## Prerequisites
 
-### Required Tools
+The project is **Linux + GCC** only (the toolchain its host games use). The Nix
+flake provides everything below in one shell.
 
-- **C++ Compiler**: C++20 compatible compiler (GCC 10+, Clang 12+, MSVC 2019+)
-- **CMake**: Version 3.16 or higher
-- **Python**: 3.8+ with uv package manager for development scripts
-- **Git**: For version control
+- **GCC 14+** — the only C++ compiler (`-std=c++23`);
+- **CMake 3.24+**;
+- **Ninja**;
+- **OpenSSL** development headers (for `llm::openai`);
+- **clang-format** — formatting (a tool, not the compiler);
+- **clang-tidy** — optional static analysis;
+- **gdb** — debugging.
 
-### Optional Tools (Recommended)
+`clang-format`, `clang-tidy` and `clangd` never compile C++ here; GCC does.
 
-- **clang-format**: For code formatting
-- **clang-tidy**: For static analysis and linting
-- **gdb/lldb**: For debugging
-
-## Development Setup
-
-### 1. Clone the Repository
+## Development setup
 
 ```bash
 git clone git@github.com:rePeek/game-agent.git
 cd game-agent
+
+# Enter the pinned GCC dev shell (or `direnv allow` once).
+nix develop
 ```
 
-### 2. Install Python Dependencies
+The shell prints the compiler and the commands below. GoogleTest and
+nlohmann/json are resolved or fetched by CMake during configure, so the first
+configure needs network access.
 
-We use `uv` for managing Python development tools:
+### Live API configuration
+
+The offline suite needs no key. For runs against a real endpoint, copy the
+example environment file and fill it in:
 
 ```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Development scripts will automatically install their dependencies
-# when run with 'uv run'
+cp .env.example .env
+# OPENAI_API_KEY=...
+# OPENAI_BASE_URL=https://api.openai.com
+# OPENAI_MODEL=...
 ```
 
-## Building the Project
+`.env` is git-ignored. `.envrc` (`use flake` + `dotenv_if_exists .env`) loads it
+into the development shell with direnv; CMake never reads it, so keys cannot
+reach `CMakeCache.txt`, a build log or the Nix store. Tests read the variables
+at run time.
 
-We provide a modern Python-based build script that handles all CMake configuration and building.
+## Building
 
-### Basic Build
+CMake presets drive everything. Debug and Release use separate build
+directories (`build/debug`, `build/release`).
 
 ```bash
-# Debug build (default)
-uv run scripts/build.py
-
-# Or explicitly specify debug mode
-uv run scripts/build.py --mode debug
+cmake --preset debug
+cmake --build --preset debug --parallel
+ctest --preset debug
 ```
 
-### Release Build
+Release is the same with `release`:
 
 ```bash
-uv run scripts/build.py --mode release
+cmake --preset release
+cmake --build --preset release --parallel
+ctest --preset release
 ```
 
-### Build with Tests
+Native CMake flags cover what a wrapper script used to:
 
 ```bash
-uv run scripts/build.py --mode debug --tests
+cmake --build --preset debug --clean-first     # rebuild from scratch
+cmake --build --preset release --verbose
+cmake --build --preset release --parallel 12
 ```
 
-### Clean Build
+Options: `BUILD_EXAMPLES` (default `ON`) and CTest's `BUILD_TESTING` (the presets
+set it `ON`). Compile commands are always exported to
+`build/<preset>/compile_commands.json` for clangd and clang-tidy.
+
+Installing:
 
 ```bash
-uv run scripts/build.py --mode release --clean
+cmake --install build/release --prefix /usr/local
 ```
 
-### Export Compile Commands (for IDE integration)
+## Formatting
+
+clang-format runs through CMake targets; there is no Python wrapper.
 
 ```bash
-uv run scripts/build.py --mode debug --export-compile-commands
+cmake --build --preset debug --target format        # rewrite in place
+cmake --build --preset debug --target format-check  # check only (CI)
 ```
 
-This generates `compile_commands.json` in both the build directory and project root, enabling excellent IDE support in VS Code, CLion, and other editors.
+The target scans only `include/`, `src/`, `tests/` and `examples/`, so
+`third_party/`, `build/` and FetchContent sources are never reformatted. Pin the
+same clang-format version in the Nix shell and CI (the flake provides it) so the
+result is stable.
 
-### Advanced Build Options
+## Static analysis (optional)
+
+`clang-tidy` reads the compile database produced during configure:
 
 ```bash
-# Custom parallel jobs
-uv run scripts/build.py --mode release --jobs 8
-
-# Verbose output
-uv run scripts/build.py --mode debug --verbose
-
-# All options combined
-uv run scripts/build.py --mode release --tests --clean --export-compile-commands --jobs 12
+clang-tidy -p build/debug src/agent.cpp
 ```
 
-### Manual CMake Build
-
-If you prefer using CMake directly:
-
-```bash
-# Configure
-cmake -B build -DCMAKE_BUILD_TYPE=Debug \
-  -DBUILD_TESTS=ON \
-  -DBUILD_EXAMPLES=ON \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-# Build
-cmake --build build --parallel $(nproc)
-```
-
-Note: the vendored headers are used directly and everything else is resolved (or fetched) during the configuration step; see "Dependencies" below.
-
-## Development Scripts
-
-We provide several Python scripts to streamline development. All scripts use modern CLI tools (Click) and rich terminal output.
-
-### 🔨 build.py - Build System
-
-**Location**: `scripts/build.py`  
-**Purpose**: Build the project with CMake
-
-```bash
-# Show all options
-uv run scripts/build.py --help
-
-# Common usage patterns
-uv run scripts/build.py --mode debug                    # Debug build
-uv run scripts/build.py --mode release --tests         # Release with tests
-uv run scripts/build.py --clean --export-compile-commands  # Clean + IDE support
-```
-
-**Features**:
-- ✅ Debug/Release builds
-- ✅ Test building toggle
-- ✅ Clean builds
-- ✅ Export compile commands for IDEs
-- ✅ Parallel building
-- ✅ Automatic dependency management via CMake FetchContent
-- ✅ Rich terminal output with progress indicators
-
-### 🎨 format.py - Code Formatting
-
-**Location**: `scripts/format.py`  
-**Purpose**: Format C++ code using clang-format
-
-```bash
-# Format all files
-uv run scripts/format.py
-
-# Check formatting without modifying files
-uv run scripts/format.py --check
-```
-
-**Features**:
-- ✅ Formats all C++ files (`.h`, `.hpp`, `.cc`, `.cpp`, `.cxx`)
-- ✅ Excludes build directories and dependency files
-- ✅ Check mode for CI/CD
-- ✅ Progress indicators
-
-### 🔍 lint.py - Static Analysis
-
-**Location**: `scripts/lint.py`  
-**Purpose**: Run clang-tidy for static analysis and linting
-
-```bash
-# Lint all files
-uv run scripts/lint.py
-
-# Auto-fix issues where possible
-uv run scripts/lint.py --fix
-
-# Custom parallel jobs
-uv run scripts/lint.py --jobs 8
-```
-
-**Features**:
-- ✅ Parallel linting for faster execution
-- ✅ Auto-fix capability
-- ✅ Requires `compile_commands.json` (build with `--export-compile-commands`)
-- ✅ macOS system include path handling
-- ✅ Rich progress reporting
+There is no bespoke lint script; use `clang-tidy` directly (or a
+`run-clang-tidy -p build/debug` invocation).
 
 ## Testing
 
-### Running Tests
-
-The test suite is hermetic: providers are driven through a scripted
-transport, so it needs no API key and no network.
+The suite is hermetic: providers are driven through a scripted transport, so it
+needs no API key and no network.
 
 ```bash
-cd build
+ctest --preset debug
 
-# Run all tests
-ctest
-
-# Verbose output
-ctest --verbose
-
-# Run the protocol tests only
-ctest -R "Llm"
-
-# Parallel test execution
-ctest --parallel $(nproc)
+ctest --preset debug --verbose
+ctest --preset debug -R "Llm"
+ctest --preset debug --parallel
 ```
-
-The suite is made of:
 
 Each module has its own test binary, so the linker checks the module boundary:
 
@@ -215,38 +135,42 @@ Each module has its own test binary, so the linker checks the module boundary:
   contiguity, budget trimming);
 - `tests/agent/` — `llm_agent_tests` (request shape, staging, atomic
   confirmation, the one-decision-at-a-time rule, isolation between agents,
-  asynchronous submission and closing) driven by a scripted `IModelProvider`, so
-  it needs no provider and no TLS;
+  owner-thread polling and closing) driven by a scripted `IModelProvider`;
 - `tests/providers/openai/` — `llm_openai_tests` (request building, response
   parsing, provider status mapping, log events) against a fake transport,
   including one test that exercises the real cpp-httplib transport through a
   refused connection;
-- `tests/integration/` — `llm_integration_tests`: Agent + Context + the
-  OpenAI provider end to end over a scripted transport, asserting the wire
-  bodies of consecutive rounds; plus `console_logger_demo`, a program that
-  prints a full decision round through the test-tree ConsoleLogger (run it with
-  `ctest -R console_logger_demo -V`).
+- `tests/integration/` — `llm_integration_tests`: Agent + Context + the OpenAI
+  provider end to end over a scripted transport, asserting the wire bodies of
+  consecutive rounds; `llama_smoke_tests`, an optional real-server test that is
+  skipped unless `GAME_AGENT_LLAMA_BASE_URL` and `GAME_AGENT_LLAMA_MODEL` are
+  set; and `console_logger_demo`, a program that prints a full decision round
+  through the test-tree ConsoleLogger.
 
-`tests/support/` holds the two loggers the SDK deliberately does not ship:
-`ConsoleLogger` (prints events, for reading a run by hand) and `CaptureLogger`
-(collects them, so tests assert on events instead of console output).
+`tests/support/` holds what the SDK deliberately does not ship: the two loggers
+(`ConsoleLogger`, `CaptureLogger`) and `agent_driver.h`, the helper that drives
+the owner-thread Agent (`DecideAsync`/`PollDecision`).
 
-GoogleTest is fetched by CMake FetchContent when tests are enabled:
+### Live smoke test
 
 ```bash
-uv run scripts/build.py --tests
+GAME_AGENT_LLAMA_BASE_URL=http://127.0.0.1:8080 \
+GAME_AGENT_LLAMA_MODEL=<model-id> \
+  ctest --preset debug -R llama_smoke --output-on-failure
 ```
 
-### Writing Tests
+The manual `Live API smoke` GitHub workflow runs the same test against a real
+endpoint using repository secrets; normal CI never needs a key.
 
-Add the file under the module's test directory (`tests/<module>/`) and list it
-in that directory's `CMakeLists.txt`. The
-provider takes its transport from `ProviderOptions`, so a test can script
-responses instead of hitting the API:
+### Writing tests
+
+Add the file under the module's test directory (`tests/<module>/`) and list it in
+that directory's `CMakeLists.txt`. The provider takes its transport from
+`ProviderOptions`, so a test scripts responses instead of hitting the API:
 
 ```cpp
 #include <gtest/gtest.h>
-#include <llm/openai.h>
+#include <llm/providers/openai/openai.h>
 
 class ScriptedTransport : public llm::ITransport {
  public:
@@ -265,44 +189,6 @@ TEST(MyProviderTest, RejectsAnEmptyBatch) {
   options.transport = std::make_shared<ScriptedTransport>();
   // ...
 }
-```
-## Code Quality
-
-### Formatting Standards
-
-We use clang-format with Google C++ style. Key guidelines:
-
-- **Indentation**: 2 spaces
-- **Line Length**: 80 characters
-- **Naming**: CamelCase for types, snake_case for variables/functions
-- **Headers**: Include guards and proper ordering
-
-### Linting Rules
-
-We use clang-tidy with these key checks:
-
-- **Modernize**: Use modern C++ features (auto, nullptr, etc.)
-- **Performance**: Avoid unnecessary copies, use move semantics
-- **Readability**: Clear naming and structure
-- **Safety**: Avoid common pitfalls and unsafe patterns
-
-### Pre-commit Workflow
-
-Before committing code:
-
-```bash
-# 1. Format code
-uv run scripts/format.py
-
-# 2. Build and test
-uv run scripts/build.py --mode debug --tests
-
-# 3. Run linting
-uv run scripts/build.py --export-compile-commands  # Ensure compile_commands.json exists
-uv run scripts/lint.py
-
-# 4. Run tests
-cd build && ctest
 ```
 
 ## Diagnostics
@@ -334,23 +220,21 @@ for (const auto& warning : result.warnings) {         // e.g. a downgrade
 carry the protocol data unchanged.
 
 For the developer, as an event stream: the SDK emits records through an
-`llm::ILogger` injected via `AgentConfig::logger` and
-`ProviderOptions::logger` (see the README). The SDK ships no implementation —
-`tests/support/` has the two the tests use, and `console_logger_demo` prints a
-whole decision round:
+`llm::ILogger` injected via `AgentConfig::logger` and `ProviderOptions::logger`.
+The SDK ships no implementation — `tests/support/` has the two the tests use,
+and `console_logger_demo` prints a whole decision round:
 
 ```bash
-ctest -R console_logger_demo -V          # the event stream, with output
-uv run scripts/build.py --tests          # then: ./build/tests/integration/console_logger_demo
+ctest --preset debug -R console_logger_demo -V
+# or run it directly:
+./build/debug/tests/integration/console_logger_demo
 ```
 
 Log records carry classifications and counts (kind, status, http code, attempts,
-tokens, command counts, schema summaries). Provider and model text is never logged:
-it stays in `CompletionResult` for the caller.
+tokens, command counts, schema summaries). Provider and model text is never
+logged: it stays in `CompletionResult` for the caller.
 
 ## Dependencies
-
-### Core Dependencies
 
 The public headers depend on nothing but the standard library; these are
 implementation details of the shipped components:
@@ -362,55 +246,46 @@ implementation details of the shipped components:
 - **cpp-httplib**: HTTP client for the transport (vendored header-only, private
   to `llm::openai`);
 - **openssl**: TLS for HTTPS endpoints (system-provided; only `llm::openai`
-  needs it, and the installed target exports it for static linking)
+  needs it, and the installed target exports it for static linking);
+- **googletest**: fetched by CMake only when `BUILD_TESTING` is on.
 
-Neither nlohmann-json nor cpp-httplib appears in a public header, so a
-consumer of the installed package only needs OpenSSL and Threads.
+Neither nlohmann-json nor cpp-httplib appears in a public header, so a consumer
+of the installed package only needs OpenSSL and Threads.
 
-### Test Dependencies
+## Pre-commit workflow
 
-Automatically fetched when tests are enabled:
+```bash
+# 1. Format
+cmake --build --preset debug --target format
 
-- **gtest**: Google's C++ testing framework (fetched from GitHub by CMake)
+# 2. Build and test
+cmake --build --preset debug --parallel
+ctest --preset debug
 
-### Development Dependencies
+# 3. Optional static analysis
+clang-tidy -p build/debug src/agent.cpp
+```
 
-Python tools (automatically managed by uv):
-
-- **click**: Modern CLI framework
-- **rich**: Rich terminal output
-- **asyncio**: Async support for parallel operations
+CI runs the same steps for both presets, plus `format-check`.
 
 ## Contributing
 
-### Code Style
+### Code style
 
-We follow the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) with these key principles:
+clang-format (Chromium base, 2-space indent, 80 columns) is the source of truth:
 
-1. **One class per file**: Keep classes focused and maintainable
-2. **Immutable by default**: Prefer const and immutable designs
-3. **Modern C++**: Use C++20 features, auto, smart pointers
-4. **RAII**: Resource management through object lifetime
-5. **Move semantics**: Prefer move over copy for performance
+- **Naming**: CamelCase for types, snake_case for functions and variables;
+- **Modern C++**: C++23, `auto` for obvious types, `nullptr`, smart pointers;
+- **RAII** and move semantics over manual resource management;
+- mark functions `const`, `constexpr`, `noexcept` when appropriate;
+- brace initialization `{}`; capture lambda variables explicitly, avoid `[=]`
+  and `[&]`.
 
-### Modern C++ Guidelines
+### Pull request process
 
-- Use `auto` for obvious types
-- Use `nullptr` instead of `NULL` or `0`
-- Prefer smart pointers (`std::unique_ptr`, `std::shared_ptr`) over raw pointers
-- Use move semantics with `std::move`
-- Mark functions `const`, `constexpr`, `noexcept` when appropriate
-- Use brace initialization `{}` instead of parentheses
-- Capture lambda variables explicitly, avoid `[=]` and `[&]`
-- Use `std::atomic` for thread-safe operations, not `volatile`
-- Prefer `emplace` over `insert`/`push_back`
-
-### Pull Request Process
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes following our code style
-4. Run the pre-commit workflow (format, build, test, lint)
-5. Commit with descriptive messages
-6. Push to your fork: `git push origin feature/amazing-feature`
-7. Create a Pull Request
+1. Fork the repository;
+2. Create a feature branch: `git checkout -b feature/amazing-feature`;
+3. Make your changes following the code style;
+4. Run the pre-commit workflow (format, build, test);
+5. Commit with descriptive messages;
+6. Push to your fork and open a Pull Request.

@@ -10,11 +10,15 @@ jobs:
   ci:
     name: CI Pipeline
     runs-on: ubuntu-latest
-    
+
+    env:
+      CC: gcc-14
+      CXX: g++-14
+
     strategy:
       fail-fast: false
       matrix:
-        build_type: [debug, release]
+        preset: [debug, release]
 
     steps:
     - name: Checkout code
@@ -22,20 +26,20 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Install uv
-      uses: astral-sh/setup-uv@v6
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake ninja-build clang-format gcc-14 g++-14 openssl libssl-dev
 
-    - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y clang-format clang-tidy ninja-build openssl libssl-dev
+    - name: Configure
+      run: cmake --preset ${{ matrix.preset }}
 
-    - name: Check code formatting
-      run: uv run scripts/format.py --check
-
-    - uses: lukka/get-cmake@latest
+    - name: Check formatting
+      run: cmake --build --preset ${{ matrix.preset }} --target format-check
 
     - name: Build
-      run: uv run scripts/build.py --mode ${{ matrix.build_type }} --tests --export-compile-commands
+      run: cmake --build --preset ${{ matrix.preset }} --parallel
 
     - name: Run tests
-      working-directory: build
-      run: ctest --build-config ${{ matrix.build_type == 'debug' && 'Debug' || 'Release' }} --output-on-failure --parallel
+      run: ctest --preset ${{ matrix.preset }}
