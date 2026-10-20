@@ -9,6 +9,12 @@ target_link_libraries(llm_integration_tests
         nlohmann_json::nlohmann_json
 )
 
+# Optional real-server smoke test. It is skipped unless
+# GAME_AGENT_LLAMA_BASE_URL and GAME_AGENT_LLAMA_MODEL are set, so the
+# offline suite is unaffected.
+add_llm_test(llama_smoke_tests llama_smoke_test.cpp)
+target_link_libraries(llama_smoke_tests PRIVATE llm::sdk)
+
 # Manual debugging aid: it prints the SDK's event stream through the test-tree
 # ConsoleLogger. It asserts nothing, so it is only there to be watched:
 #   ctest -R console_logger_demo -V

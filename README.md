@@ -117,14 +117,6 @@ if (result.context_revision != board.Revision()) {
   agent.DiscardDecision(result.decision_id);  // stale answer
   return;
 }
-if (decision.status != llm::DecisionStatus::Completed ||
-    !decision.completion.IsSuccess()) {
-  return;  // handle a refusal or a model error
-}
-if (decision.context_revision != board.Revision()) {
-  agent.DiscardDecision(decision.decision_id);  // stale answer
-  return;
-}
 
 // Bind the model's arguments to the registered callbacks. No side effects yet.
 llm::PrepareResult prepared = agent.PrepareCommands(result.decision_id);
@@ -154,6 +146,18 @@ What the agent guarantees:
   both the schema the model sees and the decoder used to bind arguments, so the
   two can never disagree. A callback must return `llm::CommandOutcome` (or
   `void`, for a command with no result);
+- **every provider's output is revalidated**: whatever `IModelProvider`
+  answered, a batch is staged only after the SDK's own validator checks it
+  against the request snapshot (batch size, known commands, unique ids, an
+  argument object and the command's schema). A provider that reports `Success`
+  without validating cannot reach a callback. A bad batch becomes
+  `InvalidCommandCalls` and stages nothing;
+- **a decision needs commands**: with an empty registry `DecideAsync` returns
+  `NoCommands` rather than sending a request that forces a call the model
+  cannot make;
+- **result JSON is checked**: `RecordCommandResults` refuses a
+  `content_json` that is not well-formed (`InvalidResultJson`) instead of
+  letting a broken callback poison the next request;
 - **prepare never runs anything**: `PrepareCommands` decodes and binds the whole
   batch. If any call cannot be decoded, the batch fails as a whole and no
   command is returned — never half a decision;
@@ -191,6 +195,15 @@ Two consequences:
 - a logger may be invoked from the model thread (provider events). A logger
   must therefore not call back into an Agent; capture into a thread-safe sink
   and consume it on the owner thread.
+
+### Lifetime and timeouts
+
+`Close()` does not cancel a request that is already on the wire, and the Agent
+has no cancellation API. Destroying an Agent waits for the in-flight call
+(the future's destructor joins the model thread), so do not destroy a working
+Agent in a real-time tick: stop it on a non-real-time path, or keep it alive.
+The provider's own `timeout_seconds` and retry policy decide the worst-case
+wait; a local `llama-server` should use a short timeout and no retries.
 
 ### Parameters and the generated schema
 
@@ -381,6 +394,19 @@ auto provider = llm::openai::CreateProvider(std::move(options));
 ```
 
 The SDK's own tests use exactly this seam, which is why they need no API key.
+
+One optional test talks to a real OpenAI-compatible server (for example a local
+`llama-server`). It is skipped unless two environment variables are set:
+
+```bash
+export GAME_AGENT_LLAMA_BASE_URL=http://127.0.0.1:8080
+export GAME_AGENT_LLAMA_MODEL=<model-id>
+ctest -R llama_smoke --output-on-failure
+```
+
+It exercises a single decision, two agents sharing one provider, and repeated
+decisions with a bounded history, asserting that a real server's output is
+either a fully validated, bound batch or a reported failure.
 
 ## Building
 
