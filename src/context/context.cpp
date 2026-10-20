@@ -64,20 +64,25 @@ void Context::ClearDecisions() {
 RenderedContext Context::Render(RenderBudget budget) const {
   RenderedContext rendered;
 
-  // The current state and the recent history are always sent, even when they
-  // alone exceed the budget: a request without them would be useless. When that
-  // happens exceeds_budget says so and the caller refuses to send.
+  // The current inputs are mandatory: they are the question this decision
+  // answers. They are always rendered; when they alone exceed the message or
+  // token budget, exceeds_budget says so and the caller refuses to send.
   const bool has_history = !IsEmpty(recent_history_);
   const bool has_context = !IsEmpty(current_context_);
-  const std::size_t trailing_messages =
-      (has_history ? 1u : 0u) + (has_context ? 1u : 0u);
+  const bool has_decision = !IsEmpty(decision_context_);
+  const std::size_t trailing_messages = (has_history ? 1u : 0u) +
+                                        (has_context ? 1u : 0u) +
+                                        (has_decision ? 1u : 0u);
   const std::size_t trailing_tokens =
       (has_history ? EstimateTokens(kRecentHistoryLabel) +
                          EstimateTokens(recent_history_)
                    : 0u) +
       (has_context ? EstimateTokens(kCurrentContextLabel) +
                          EstimateTokens(current_context_)
-                   : 0u);
+                   : 0u) +
+      (has_decision ? EstimateTokens(kDecisionContextLabel) +
+                          EstimateTokens(decision_context_)
+                    : 0u);
 
   const bool budgeted = budget.max_input_tokens > 0;
   const std::size_t fixed = budget.fixed_tokens + trailing_tokens;
@@ -137,12 +142,19 @@ RenderedContext Context::Render(RenderBudget budget) const {
     rendered.messages.push_back(Message::User(
         std::string(kCurrentContextLabel) + "\n" + current_context_));
   }
+  // The framing for the decision being asked about goes last, so the model
+  // answers this question with all of the current state in view.
+  if (has_decision) {
+    rendered.messages.push_back(Message::User(
+        std::string(kDecisionContextLabel) + "\n" + decision_context_));
+  }
 
   // History is expendable: when it does not fit, it is dropped rather than the
-  // request being refused. Only the essential content (system prompt, command
-  // schemas, current state) can make a request impossible.
+  // request being refused. The mandatory inputs are not, so they also enforce
+  // max_messages as a strict ceiling.
   rendered.estimated_tokens = fixed + used_tokens;
-  rendered.exceeds_budget = budgeted && fixed > budget.max_input_tokens;
+  rendered.exceeds_budget = trailing_messages > config_.max_messages ||
+                            (budgeted && fixed > budget.max_input_tokens);
   return rendered;
 }
 

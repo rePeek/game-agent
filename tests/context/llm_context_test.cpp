@@ -382,5 +382,46 @@ TEST(LlmContextTest, ZeroMemoryCapFallsBackToTheRenderBudget) {
   EXPECT_EQ(context.decision_count(), 3u);
 }
 
+TEST(LlmContextTest, RendersTheCurrentDecisionContextAsTheLastTurn) {
+  Context context;
+  ContextUpdate update;
+  update.current_context = "Minute 62, 1-1.";
+  update.decision_context = "Decide whether to change the pressing scheme.";
+  update.context_revision = "rev-62";
+  context.SetContextUpdate(std::move(update));
+
+  const RenderedContext rendered = context.Render();
+  ASSERT_EQ(rendered.messages.size(), 2u);
+  EXPECT_EQ(rendered.messages[0].role, Role::User);
+  EXPECT_NE(rendered.messages[0].content.find("Minute 62"), std::string::npos);
+  EXPECT_EQ(rendered.messages[1].role, Role::User);
+  EXPECT_NE(rendered.messages[1].content.find("pressing scheme"),
+            std::string::npos);
+  EXPECT_NE(rendered.messages[1].content.find("Decision context"),
+            std::string::npos);
+}
+
+TEST(LlmContextTest, MaxMessagesIsAStrictCeilingForMandatoryInputs) {
+  ContextConfig config;
+  config.max_messages = 1;  // room for one mandatory message only
+  Context context(config);
+  ContextUpdate update;
+  update.current_context = "Minute 62.";
+  update.decision_context = "Decide.";
+  update.context_revision = "rev-62";
+  context.SetContextUpdate(std::move(update));
+
+  const RenderedContext rendered = context.Render();
+  EXPECT_TRUE(rendered.exceeds_budget)
+      << "mandatory inputs must not silently exceed max_messages";
+
+  // With a large enough ceiling the same content renders fine.
+  ContextConfig roomy;
+  roomy.max_messages = 8;
+  Context other(roomy);
+  other.SetContextUpdate(update);
+  EXPECT_FALSE(other.Render().exceeds_budget);
+}
+
 }  // namespace
 }  // namespace llm

@@ -44,9 +44,9 @@ struct ContextUpdate {
   /// previous window.
   std::string recent_history;
   /// A short factual summary of the moment this decision is being asked about.
-  /// It is snapshotted when the decision starts and stored with the decision
-  /// once its results are confirmed, so the transcript shows what each decision
-  /// was answering.
+  /// It is sent to the model as the last user turn of the request and, once
+  /// the results are confirmed, stored with the decision so the transcript
+  /// shows what each decision was answering.
   std::string decision_context;
   /// Revision of the game state this update describes. It travels with the
   /// decision so a stale answer can be recognised instead of executed.
@@ -119,8 +119,10 @@ struct RenderedContext {
   /// Approximate tokens of the whole request this render belongs to, including
   /// fixed_tokens. Diagnostic only.
   std::size_t estimated_tokens = 0;
-  /// True when even the fixed content and the newest decision do not fit the
-  /// budget. The caller must refuse the request rather than send it.
+  /// True when the mandatory inputs (recent history, current context and the
+  /// decision framing) alone exceed `max_messages` or the token budget. The
+  /// caller must refuse the request rather than send it; history is dropped
+  /// instead.
   bool exceeds_budget = false;
 };
 

@@ -567,5 +567,28 @@ TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
   EXPECT_EQ(messages[2].role, Role::Assistant);
 }
 
+TEST(LlmAgentTest, FirstRequestCarriesTheDecisionContext) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
+
+  ContextUpdate update = Update("rev-62");
+  update.current_context.clear();  // the framing alone must reach the model
+  update.decision_context = "Decide whether to raise the defensive line.";
+  agent.UpdateContext(std::move(update));
+
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult decision = test::WaitDecision(agent);
+  ASSERT_TRUE(decision.completion.IsSuccess());
+
+  ASSERT_FALSE(provider->requests.empty());
+  const std::vector<Message>& messages = provider->requests[0].messages;
+  ASSERT_FALSE(messages.empty());
+  const Message& last = messages.back();
+  EXPECT_EQ(last.role, Role::User);
+  EXPECT_NE(last.content.find("raise the defensive line"), std::string::npos)
+      << "the first request must contain the decision framing";
+}
+
 }  // namespace
 }  // namespace llm
