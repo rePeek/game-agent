@@ -1,32 +1,38 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 
 project(game-agent
     VERSION 0.1.0
-    DESCRIPTION "Structured tool-calling C++ SDK for OpenAI-compatible models"
+    DESCRIPTION "C++ Agent SDK"
     LANGUAGES CXX
 )
 
-# C++20 requirement
-set(CMAKE_CXX_STANDARD 20)
+# Only GCC compiles this project. clang-format/clang-tidy/clangd are still used
+# as tools, but the C++ compiler is GCC so the toolchain matches the games this
+# SDK is embedded in.
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR
+        "game-agent requires GCC, but CMAKE_CXX_COMPILER_ID is "
+        "'${CMAKE_CXX_COMPILER_ID}'. Configure with a GCC toolchain.")
+endif()
+
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build options
-option(BUILD_TESTS "Build tests" OFF)
+# Defines BUILD_TESTING (and enable_testing()); the standard switch that
+# replaces the project-local BUILD_TESTS.
+include(CTest)
+
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_SHARED_LIBS "Build shared libraries instead of static ones" OFF)
-
-# Third-party dependencies: a vendored cpp-httplib header, nlohmann/json
-# (reused, found or fetched) and GoogleTest when tests are enabled. OpenSSL is
-# looked up by the module that needs it (src/providers/openai).
-add_subdirectory(third_party)
 
 # ---------------------------------------------------------------------------
 # Module helpers
 #
 # Public headers live in include/, implementation details in src/. A module
 # target is created, configured and added to the install list by its own
-# src/<module>/CMakeLists.txt.
+# src/<module>/CMakeLists.txt. cxx_std_23 is PUBLIC so an installed consumer
+# inherits the language requirement.
 # ---------------------------------------------------------------------------
 function(configure_llm_component target_name)
     target_include_directories(${target_name}
@@ -36,24 +42,11 @@ function(configure_llm_component target_name)
         PRIVATE
             ${CMAKE_SOURCE_DIR}/src
     )
+    target_compile_features(${target_name} PUBLIC cxx_std_23)
 endfunction()
 
 function(configure_llm_warnings target_name)
-    if(MSVC)
-        target_compile_options(${target_name} PRIVATE /W4)
-        target_compile_definitions(${target_name} PRIVATE
-            WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0601)
-    else()
-        target_compile_options(${target_name} PRIVATE
-            -Wall -Wextra -Wpedantic
-            $<$<CONFIG:Debug>:-g -O0>
-            $<$<CONFIG:Release>:-O3>
-        )
-        if(APPLE)
-            target_compile_options(${target_name} PRIVATE -stdlib=libc++)
-        endif()
-    endif()
-
+    target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_definitions(${target_name} PRIVATE
         $<$<CONFIG:Debug>:AI_SDK_DEBUG=1>
         $<$<CONFIG:Release>:AI_SDK_RELEASE=1;NDEBUG>
@@ -64,6 +57,11 @@ endfunction()
 define_property(GLOBAL PROPERTY LLM_INSTALL_TARGETS
     BRIEF_DOCS "Targets installed by game-agent"
     FULL_DOCS "Appended by each module's CMakeLists.txt, consumed by cmake/Install.cmake")
+
+# Third-party dependencies: a vendored cpp-httplib header, nlohmann/json
+# (reused, found or fetched) and GoogleTest when tests are enabled. OpenSSL is
+# looked up by the module that needs it (src/providers/openai).
+add_subdirectory(third_party)
 
 # ---------------------------------------------------------------------------
 # Modules
@@ -103,11 +101,13 @@ if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# Tests
-if(BUILD_TESTS)
-    enable_testing()
+# Tests (CTest's BUILD_TESTING switch)
+if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+# clang-format targets: `format` and `format-check`
+include(cmake/Formatting.cmake)
 
 # Installation, export and package configuration
 include(cmake/Install.cmake)
@@ -115,9 +115,10 @@ include(cmake/Install.cmake)
 # Print configuration summary
 message(STATUS "")
 message(STATUS "game-agent ${PROJECT_VERSION} Configuration Summary")
+message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build examples: ${BUILD_EXAMPLES}")
-message(STATUS "  Build tests: ${BUILD_TESTS}")
+message(STATUS "  Build tests: ${BUILD_TESTING}")
 message(STATUS "  Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "")

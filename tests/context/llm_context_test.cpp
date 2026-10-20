@@ -36,8 +36,8 @@ struct DecisionSpec {
   std::uint64_t id = 1;
   std::string command_name = "set_pressing_intensity";
   std::string arguments = R"({"level":3})";
-  std::string assistant_text;
-  std::string decision_context;
+  std::string assistant_text{};
+  std::string decision_context{};
 };
 
 DecisionRecord MakeDecision(const DecisionSpec& spec) {
