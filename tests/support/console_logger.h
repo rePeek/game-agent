@@ -17,9 +17,11 @@ class ConsoleLogger final : public llm::ILogger {
   void Log(const llm::LogRecord& record) override {
     // Agent workers can log concurrently, so the stream is guarded.
     std::lock_guard<std::mutex> lock(mutex_);
-    out_ << "[" << LevelName(record.level) << "] "
-         << "[" << record.session_id << ":" << record.request_id << "] "
-         << record.event << ": " << record.message << '\n';
+    // One statement per field: this formatting is stable across clang-format
+    // versions, unlike a single wrapped stream chain.
+    out_ << "[" << LevelName(record.level) << "] ";
+    out_ << "[" << record.session_id << ":" << record.request_id << "] ";
+    out_ << record.event << ": " << record.message << '\n';
   }
 
  private:

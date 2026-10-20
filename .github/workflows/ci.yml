@@ -32,6 +32,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           cmake ninja-build clang-format gcc-14 g++-14 openssl libssl-dev
+        clang-format --version
 
     - name: Configure
       run: cmake --preset ${{ matrix.preset }}
