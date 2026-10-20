@@ -8,15 +8,18 @@ callables that the game chooses when to run.
 context + command definitions
            |
            v
+   Agent::DecideAsync()              snapshot the request, start the model call,
+           |                           return immediately (owner thread)
+           v  (model thread)
    provider.Complete(request)          one model request, no retries into a
            |                           conversation, no command execution
            v
    CompletionResult
      status         Success | NoCommandCalls | InvalidCommandCalls | Truncated |
                     Refused | Unsupported | ProviderError
-     command_calls  ids, names and argument JSON, validated
+    command_calls  ids, names and argument JSON, validated
            |
-           v
+           v  Agent::PollDecision() on the owner thread stages the decision
    Agent::PrepareCommands()            decode arguments, bind the C++ callback,
            |                           run nothing
            v
@@ -95,10 +98,25 @@ agent.UpdateContext({.current_context = board.Describe(),
                      .decision_context = "minute 62, score 1-1",
                      .context_revision = board.Revision()});
 // ...and the model is asked, without blocking the tick.
-std::future<llm::DecisionResult> future = agent.DecideAsync();
+const llm::StartOutcome started = agent.DecideAsync();
+if (!started.ok()) {
+  return;  // NotConfigured / Busy / ContextTooLarge / Closed / Failed
+}
 
-// Later in the game loop:
-const llm::DecisionResult decision = future.get();
+// Later in the game loop: PollDecision() never blocks.
+std::optional<llm::DecisionResult> decision = agent.PollDecision();
+if (!decision.has_value()) {
+  return;  // the model has not answered yet
+}
+const llm::DecisionResult& result = *decision;
+if (result.status != llm::DecisionStatus::Completed ||
+    !result.completion.IsSuccess()) {
+  return;  // handle a refusal or a model error
+}
+if (result.context_revision != board.Revision()) {
+  agent.DiscardDecision(result.decision_id);  // stale answer
+  return;
+}
 if (decision.status != llm::DecisionStatus::Completed ||
     !decision.completion.IsSuccess()) {
   return;  // handle a refusal or a model error
@@ -109,9 +127,9 @@ if (decision.context_revision != board.Revision()) {
 }
 
 // Bind the model's arguments to the registered callbacks. No side effects yet.
-llm::PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
+llm::PrepareResult prepared = agent.PrepareCommands(result.decision_id);
 if (!prepared.ok()) {
-  agent.DiscardDecision(decision.decision_id);  // e.g. bad arguments
+  agent.DiscardDecision(result.decision_id);  // e.g. bad arguments
   return;
 }
 
@@ -120,7 +138,7 @@ std::vector<llm::CommandResult> results;
 for (llm::PreparedCommand& command : prepared.commands) {
   results.push_back(std::move(command).Invoke());
 }
-agent.RecordCommandResults(decision.decision_id, std::move(results));
+agent.RecordCommandResults(result.decision_id, std::move(results));
 ```
 
 What the agent guarantees:
@@ -149,13 +167,30 @@ What the agent guarantees:
   reported as a failed `CommandOutcome` instead of escaping into the game loop;
 - **staleness is visible**: every decision carries the `context_revision` it was
   taken from; whether that is still current is the game's call;
-- **no blocking**: `DecideAsync` snapshots the request on the calling thread and
-  runs the provider on the agent's own worker. `Close()` refuses further work,
-  invalidates prepared commands and answers a decision that returns afterwards
-  as `Closed`; the destructor joins the worker.
+- **no blocking**: `DecideAsync` snapshots the request and returns immediately;
+  the provider runs on its own thread and only hands back a `CompletionResult`
+  through a future. `PollDecision()` is how the owner thread collects it.
+  `Close()` refuses further work and invalidates prepared commands; a request
+  that is already running is answered as `Closed` when polled, or waited out
+  when the agent is destroyed.
 
-`WaitForIdle()` means *quiescence* (no provider call in flight), which is not the
-same as the future being ready.
+`WaitForIdle()` waits for the model call to finish (it does not collect the
+result).
+
+### Thread ownership
+
+An Agent has an **owner thread** — the thread that created it — and every
+public method must be called from it. The model thread only calls the provider
+and returns a `CompletionResult`; it never reads or writes Agent state. That
+is why the Agent holds no mutex or condition variable.
+
+Two consequences:
+
+- collect results with `PollDecision()` on the owner thread, typically at a
+  safe point in your tick;
+- a logger may be invoked from the model thread (provider events). A logger
+  must therefore not call back into an Agent; capture into a thread-safe sink
+  and consume it on the owner thread.
 
 ### Parameters and the generated schema
 
