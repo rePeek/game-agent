@@ -25,6 +25,10 @@ bool ValidateParameter(const std::string& command_name,
         "an optional parameter needs a default value or must be "
         "required");
   }
+  if (parameter.minimum_int.has_value() && parameter.maximum_int.has_value() &&
+      *parameter.minimum_int > *parameter.maximum_int) {
+    return fail("minimum is greater than maximum");
+  }
   if (parameter.minimum.has_value() && parameter.maximum.has_value() &&
       *parameter.minimum > *parameter.maximum) {
     return fail("minimum is greater than maximum");

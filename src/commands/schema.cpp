@@ -86,10 +86,14 @@ std::string BuildCommandSchema(
         schema["default"] = std::move(parsed);
       }
     }
-    if (parameter.minimum.has_value()) {
+    if (parameter.minimum_int.has_value()) {
+      schema["minimum"] = *parameter.minimum_int;
+    } else if (parameter.minimum.has_value()) {
       schema["minimum"] = *parameter.minimum;
     }
-    if (parameter.maximum.has_value()) {
+    if (parameter.maximum_int.has_value()) {
+      schema["maximum"] = *parameter.maximum_int;
+    } else if (parameter.maximum.has_value()) {
       schema["maximum"] = *parameter.maximum;
     }
     if (parameter.min_length.has_value()) {

@@ -486,5 +486,31 @@ TEST(LlmValidationTest, DuplicateCommandDefinitionsAreRefused) {
       << report.Summary();
 }
 
+TEST(LlmValidationTest, StringLengthCountsUnicodeCodePointsNotBytes) {
+  const JsonSchemaCommandValidator validator;
+  const ModelRequest request = RequestWith({Tool(
+      "t",
+      R"({"type":"object","properties":{"s":{"type":"string","maxLength":1}},"required":["s"]})")});
+
+  // "中" is one code point even though it is three UTF-8 bytes.
+  EXPECT_TRUE(
+      validator.Validate(request, {CommandCall{"c", "t", R"({"s":"中"})"}}).ok);
+  EXPECT_FALSE(
+      validator.Validate(request, {CommandCall{"c", "t", R"({"s":"中文"})"}})
+          .ok);
+
+  // minLength uses the same count.
+  const ModelRequest min_request = RequestWith({Tool(
+      "t",
+      R"({"type":"object","properties":{"s":{"type":"string","minLength":2}},"required":["s"]})")});
+  EXPECT_FALSE(
+      validator.Validate(min_request, {CommandCall{"c", "t", R"({"s":"中"})"}})
+          .ok);
+  EXPECT_TRUE(
+      validator
+          .Validate(min_request, {CommandCall{"c", "t", R"({"s":"中文"})"}})
+          .ok);
+}
+
 }  // namespace
 }  // namespace llm

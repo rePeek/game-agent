@@ -58,7 +58,11 @@ struct ParameterDescriptor {
   /// Default as JSON text (already serialized), when one was declared.
   std::optional<std::string> default_json;
 
-  // Numeric bounds (Integer/Number only).
+  // Numeric bounds (Integer/Number only). Integer bounds are kept as
+  // std::int64_t so a bound above 2^53 is compared exactly; floating point
+  // bounds use double.
+  std::optional<std::int64_t> minimum_int;
+  std::optional<std::int64_t> maximum_int;
   std::optional<double> minimum;
   std::optional<double> maximum;
 
@@ -192,8 +196,8 @@ class Param {
             typename = std::enable_if_t<std::is_arithmetic_v<U> &&
                                         !std::is_same_v<U, bool>>>
   Param& Range(T minimum, T maximum) {
-    minimum_ = static_cast<double>(minimum);
-    maximum_ = static_cast<double>(maximum);
+    SetBound(minimum_, minimum_int_, minimum);
+    SetBound(maximum_, maximum_int_, maximum);
     return *this;
   }
 
@@ -201,7 +205,7 @@ class Param {
             typename = std::enable_if_t<std::is_arithmetic_v<U> &&
                                         !std::is_same_v<U, bool>>>
   Param& Min(T value) {
-    minimum_ = static_cast<double>(value);
+    SetBound(minimum_, minimum_int_, value);
     return *this;
   }
 
@@ -209,7 +213,7 @@ class Param {
             typename = std::enable_if_t<std::is_arithmetic_v<U> &&
                                         !std::is_same_v<U, bool>>>
   Param& Max(T value) {
-    maximum_ = static_cast<double>(value);
+    SetBound(maximum_, maximum_int_, value);
     return *this;
   }
 
@@ -247,6 +251,8 @@ class Param {
     descriptor.description = description_;
     descriptor.required = required_;
     descriptor.default_json = default_json_;
+    descriptor.minimum_int = minimum_int_;
+    descriptor.maximum_int = maximum_int_;
     descriptor.minimum = minimum_;
     descriptor.maximum = maximum_;
     descriptor.min_length = min_length_;
@@ -258,11 +264,27 @@ class Param {
   }
 
  private:
+  /// Stores an integral bound exactly and a floating point bound as double, so
+  /// only one of the two forms is ever set.
+  static void SetBound(std::optional<double>& as_double,
+                       std::optional<std::int64_t>& as_int,
+                       T value) {
+    if constexpr (std::is_integral_v<T>) {
+      as_int = static_cast<std::int64_t>(value);
+      as_double.reset();
+    } else {
+      as_double = static_cast<double>(value);
+      as_int.reset();
+    }
+  }
+
   std::string name_;
   std::string description_;
   bool required_ = false;
   std::optional<std::string> default_json_;
   std::optional<T> default_value_;
+  std::optional<std::int64_t> minimum_int_;
+  std::optional<std::int64_t> maximum_int_;
   std::optional<double> minimum_;
   std::optional<double> maximum_;
   std::optional<std::int64_t> min_length_;

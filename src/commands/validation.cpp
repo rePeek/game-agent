@@ -1,5 +1,7 @@
 #include "llm/commands/validation.h"
 
+#include "utf8.h"
+
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -453,13 +455,15 @@ void ValidateAgainstSchema(const Json& schema,
   }
 
   if (value.is_number()) {
+    // nlohmann compares two integers exactly, so an integer bound above 2^53
+    // is not rounded through double.
     if (schema.contains("minimum") && schema["minimum"].is_number() &&
-        value.get<double>() < schema["minimum"].get<double>()) {
+        value < schema["minimum"]) {
       AddProblem(problems, ProblemKind::Arguments,
                  path + " must be >= " + schema["minimum"].dump());
     }
     if (schema.contains("maximum") && schema["maximum"].is_number() &&
-        value.get<double>() > schema["maximum"].get<double>()) {
+        value > schema["maximum"]) {
       AddProblem(problems, ProblemKind::Arguments,
                  path + " must be <= " + schema["maximum"].dump());
     }
@@ -467,9 +471,10 @@ void ValidateAgainstSchema(const Json& schema,
 
   if (value.is_string()) {
     const std::string text = value.get<std::string>();
+    const std::size_t length = detail::Utf8Length(text);
     if (schema.contains("minLength") &&
         schema["minLength"].is_number_unsigned() &&
-        text.size() < schema["minLength"].get<std::size_t>()) {
+        length < schema["minLength"].get<std::size_t>()) {
       AddProblem(problems, ProblemKind::Arguments,
                  path + " is shorter than " +
                      std::to_string(schema["minLength"].get<std::size_t>()) +
@@ -477,7 +482,7 @@ void ValidateAgainstSchema(const Json& schema,
     }
     if (schema.contains("maxLength") &&
         schema["maxLength"].is_number_unsigned() &&
-        text.size() > schema["maxLength"].get<std::size_t>()) {
+        length > schema["maxLength"].get<std::size_t>()) {
       AddProblem(problems, ProblemKind::Arguments,
                  path + " is longer than " +
                      std::to_string(schema["maxLength"].get<std::size_t>()) +

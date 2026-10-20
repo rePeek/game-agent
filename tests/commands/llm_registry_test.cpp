@@ -218,5 +218,26 @@ TEST(LlmRegistryTest, RejectsBindingContractsWhenNoProviderValidated) {
   EXPECT_FALSE(command->bind(R"({"level":1,"code":"x"})").ok);
 }
 
+TEST(LlmRegistryTest, BindingUsesExactIntegerBoundsAndUnicodeLength) {
+  constexpr std::int64_t kMax = 9007199254740993LL;
+  CommandRegistry registry;
+  ASSERT_TRUE(registry
+                  .Add(MakeRegisteredCommand(
+                      "big", "",
+                      Params(Param<std::int64_t>("v").Range(0, kMax).Required(),
+                             Param<std::string>("s").MaxLength(1).Required()),
+                      [](std::int64_t, const std::string&) {
+                        return CommandOutcome{true, {}, {}};
+                      }))
+                  .ok());
+  const RegisteredCommand* command = registry.Find("big");
+
+  EXPECT_TRUE(command->bind(R"({"v":9007199254740993,"s":"o"})").ok);
+  EXPECT_FALSE(command->bind(R"({"v":9007199254740994,"s":"o"})").ok);
+  // One Unicode code point is one character, whatever its UTF-8 width.
+  EXPECT_TRUE(command->bind(R"({"v":0,"s":"中"})").ok);
+  EXPECT_FALSE(command->bind(R"({"v":0,"s":"中文"})").ok);
+}
+
 }  // namespace
 }  // namespace llm

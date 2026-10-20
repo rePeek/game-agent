@@ -1,5 +1,7 @@
 #include "llm/commands/arguments.hpp"
 
+#include "utf8.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -220,20 +222,39 @@ bool CheckArgumentConstraints(const CommandArguments& args,
   }
 
   if (v.is_number()) {
-    const double number = v.get<double>();
-    if (descriptor.minimum.has_value() && number < *descriptor.minimum) {
+    // Integer bounds are compared as integers (exact even above 2^53);
+    // floating point bounds use double.
+    if (descriptor.minimum_int.has_value()) {
+      const nlohmann::json bound = *descriptor.minimum_int;
+      if (v < bound) {
+        error = "argument '" + name + "' must be at least " +
+                std::to_string(*descriptor.minimum_int);
+        return false;
+      }
+    } else if (descriptor.minimum.has_value() &&
+               v.get<double>() < *descriptor.minimum) {
       error = "argument '" + name + "' must be at least " +
               std::to_string(*descriptor.minimum);
       return false;
     }
-    if (descriptor.maximum.has_value() && number > *descriptor.maximum) {
+    if (descriptor.maximum_int.has_value()) {
+      const nlohmann::json bound = *descriptor.maximum_int;
+      if (v > bound) {
+        error = "argument '" + name + "' must be at most " +
+                std::to_string(*descriptor.maximum_int);
+        return false;
+      }
+    } else if (descriptor.maximum.has_value() &&
+               v.get<double>() > *descriptor.maximum) {
       error = "argument '" + name + "' must be at most " +
               std::to_string(*descriptor.maximum);
       return false;
     }
   }
   if (v.is_string()) {
-    const auto length = static_cast<std::int64_t>(v.get<std::string>().size());
+    // JSON Schema length is in Unicode code points, not UTF-8 bytes.
+    const auto length =
+        static_cast<std::int64_t>(detail::Utf8Length(v.get<std::string>()));
     if (descriptor.min_length.has_value() && length < *descriptor.min_length) {
       error = "argument '" + name + "' is too short";
       return false;

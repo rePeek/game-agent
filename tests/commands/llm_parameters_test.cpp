@@ -51,10 +51,12 @@ TEST(LlmParametersTest, DescriptorsCarryTypeNameAndConstraints) {
   EXPECT_EQ(descriptors[0].name, "intensity");
   EXPECT_EQ(descriptors[0].type, CommandValueType::Integer);
   EXPECT_TRUE(descriptors[0].required);
-  ASSERT_TRUE(descriptors[0].minimum.has_value());
-  ASSERT_TRUE(descriptors[0].maximum.has_value());
-  EXPECT_DOUBLE_EQ(*descriptors[0].minimum, 0.0);
-  EXPECT_DOUBLE_EQ(*descriptors[0].maximum, 5.0);
+  ASSERT_TRUE(descriptors[0].minimum_int.has_value());
+  ASSERT_TRUE(descriptors[0].maximum_int.has_value());
+  EXPECT_EQ(*descriptors[0].minimum_int, 0);
+  EXPECT_EQ(*descriptors[0].maximum_int, 5);
+  EXPECT_FALSE(descriptors[0].minimum.has_value())
+      << "integer bounds are kept exact, not as double";
 
   EXPECT_EQ(descriptors[1].type, CommandValueType::String);
   EXPECT_FALSE(descriptors[1].required);
@@ -222,6 +224,29 @@ TEST(LlmParametersTest, BooleanParametersHaveNoNumericRange) {
   static_assert(HasNumericRange<Param<int>>::value,
                 "Range must compile for an integer parameter");
   SUCCEED();
+}
+
+TEST(LlmParametersTest, LargeIntegerBoundsAreExact) {
+  // 2^53 + 1 cannot be represented as a double; a schema must not round it.
+  constexpr std::int64_t kMax = 9007199254740993LL;
+  const auto params =
+      Params(Param<std::int64_t>("v").Range(0, kMax).Required());
+
+  const std::string schema = BuildCommandSchema(params.Descriptors());
+  EXPECT_NE(schema.find("9007199254740993"), std::string::npos) << schema;
+
+  const ModelRequest request =
+      RequestWith({DefinitionWith("c", params.Descriptors())});
+  const JsonSchemaCommandValidator validator;
+  EXPECT_TRUE(validator
+                  .Validate(request, {CommandCall{"c1", "c",
+                                                  R"({"v":9007199254740993})"}})
+                  .ok);
+  EXPECT_FALSE(
+      validator
+          .Validate(request,
+                    {CommandCall{"c1", "c", R"({"v":9007199254740994})"}})
+          .ok);
 }
 
 }  // namespace
