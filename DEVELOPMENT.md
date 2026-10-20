@@ -236,18 +236,22 @@ logged: it stays in `CompletionResult` for the caller.
 
 ## Dependencies
 
-The public headers depend on nothing but the standard library; these are
-implementation details of the shipped components:
+The public headers depend on nothing but the standard library. Third-party C++
+sources come from CPM, pinned in `cmake/Dependencies.cmake` (the CPM release
+itself is pinned in `cmake/CPM.cmake`); system libraries use `find_package`:
 
-- **nlohmann-json**: request/response JSON and schema validation (an existing
-  `nlohmann_json::nlohmann_json` target is reused; otherwise `find_package()`,
-  otherwise a pinned upstream fetch by CMake). Private to `llm::commands` and
-  `llm::openai`;
-- **cpp-httplib**: HTTP client for the transport (vendored header-only, private
-  to `llm::openai`);
-- **openssl**: TLS for HTTPS endpoints (system-provided; only `llm::openai`
-  needs it, and the installed target exports it for static linking);
-- **googletest**: fetched by CMake only when `BUILD_TESTING` is on.
+- **nlohmann-json** `v3.11.3`: request/response JSON and schema generation and
+  validation. Private to `llm::commands` and `llm::openai`;
+- **cpp-httplib** `v0.22.0`: header-only HTTP client for the transport (private
+  to `llm::openai`). Header-only on purpose, so no Python is needed;
+- **openssl** (`find_package(OpenSSL 3.0 REQUIRED)`) and **threads**
+  (`find_package(Threads REQUIRED)`): system libraries. Only `llm::openai`
+  needs them, and the installed target exports them for static linking;
+- **googletest**: a pinned revision, fetched only when `BUILD_TESTING` is on.
+
+`CPM_SOURCE_CACHE` (`.cache/CPM`) keeps the fetched sources out of the source
+tree and lets a reconfigure work offline. A parent project that embeds
+game-agent can reuse its own cache and the packages it already registered.
 
 Neither nlohmann-json nor cpp-httplib appears in a public header, so a consumer
 of the installed package only needs OpenSSL and Threads.

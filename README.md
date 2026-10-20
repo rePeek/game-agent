@@ -415,7 +415,8 @@ either a fully validated, bound batch or a reported failure.
 ## Building
 
 The build is driven by CMake presets; Debug and Release use separate build
-directories under `build/`.
+directories under `build/`. The first configure fetches the third-party
+sources with CPM into `.cache/CPM` (git-ignored), then reuses them offline.
 
 ```bash
 cmake --preset debug        # or: release
@@ -460,16 +461,24 @@ matching convenience header.
 
 ## Dependencies
 
-The public headers are standard-library-only; these are implementation details:
+The public headers are standard-library-only. Third-party C++ sources are
+fetched by CPM with pinned versions (`cmake/CPM.cmake` fixes the CPM release,
+`cmake/Dependencies.cmake` declares the dependencies); system libraries stay
+with `find_package`:
 
-- **cpp-httplib** — vendored header-only HTTP client, used by the OpenAI
-  provider (with OpenSSL for TLS);
-- **nlohmann/json** — request/response JSON, schema generation and validation;
-  an existing `nlohmann_json::nlohmann_json` target is reused when the enclosing
-  project provides one, otherwise `find_package()` is tried, otherwise CMake
-  fetches the official release with a pinned SHA256;
-- **OpenSSL** — required by the HTTP transport;
-- **GoogleTest** — tests only, fetched by CMake.
+- **nlohmann/json** `v3.11.3` — request/response JSON, schema generation and
+  validation (kept in step with Football Sim). Private to `llm::commands` and
+  `llm::openai`, so it never reaches a consumer's include path;
+- **cpp-httplib** `v0.22.0` — header-only HTTP client for the OpenAI provider
+  (with OpenSSL for TLS). Header-only on purpose: the compiled mode needs
+  Python, which this project does not use;
+- **OpenSSL** (`find_package(OpenSSL 3.0 REQUIRED)`) and **Threads**
+  (`find_package(Threads REQUIRED)`) — system libraries, not CPM;
+- **GoogleTest** — a pinned revision, tests only (`BUILD_TESTING`).
+
+Fetched sources live in `CPM_SOURCE_CACHE` (`.cache/CPM`, git-ignored). A
+parent build that embeds the SDK can point the cache at its own directory and
+reuse packages it already registered.
 
 A consumer of the installed package needs OpenSSL and Threads only, and only
 when it links `llm::openai`.
