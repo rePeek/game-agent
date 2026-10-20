@@ -157,6 +157,8 @@ config.json
 *.bak
 *.backup
 
-.envrc
+# CMake user-local presets (machine-specific, never committed)
+CMakeUserPresets.json
+
 .cache/
 .claude/
