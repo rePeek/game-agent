@@ -19,7 +19,7 @@ install(TARGETS ${LLM_TARGETS}
 )
 
 # .hpp for the public agent header, .h for the rest.
-install(DIRECTORY include/
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING
         PATTERN "*.h"
@@ -33,20 +33,20 @@ install(EXPORT game-agent-targets
 )
 
 configure_package_config_file(
-    "${CMAKE_SOURCE_DIR}/cmake/game-agent-config.cmake.in"
-    "${CMAKE_BINARY_DIR}/game-agent-config.cmake"
+    "${PROJECT_SOURCE_DIR}/cmake/game-agent-config.cmake.in"
+    "${PROJECT_BINARY_DIR}/game-agent-config.cmake"
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/game-agent
     PATH_VARS CMAKE_INSTALL_INCLUDEDIR
 )
 
 write_basic_package_version_file(
-    "${CMAKE_BINARY_DIR}/game-agent-config-version.cmake"
+    "${PROJECT_BINARY_DIR}/game-agent-config-version.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 
 install(FILES
-    "${CMAKE_BINARY_DIR}/game-agent-config.cmake"
-    "${CMAKE_BINARY_DIR}/game-agent-config-version.cmake"
+    "${PROJECT_BINARY_DIR}/game-agent-config.cmake"
+    "${PROJECT_BINARY_DIR}/game-agent-config-version.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/game-agent
 )

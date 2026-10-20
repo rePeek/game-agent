@@ -37,10 +37,10 @@ option(BUILD_SHARED_LIBS "Build shared libraries instead of static ones" OFF)
 function(configure_llm_component target_name)
     target_include_directories(${target_name}
         PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
         PRIVATE
-            ${CMAKE_SOURCE_DIR}/src
+            ${PROJECT_SOURCE_DIR}/src
     )
     target_compile_features(${target_name} PUBLIC cxx_std_23)
 endfunction()
@@ -58,10 +58,10 @@ define_property(GLOBAL PROPERTY LLM_INSTALL_TARGETS
     BRIEF_DOCS "Targets installed by game-agent"
     FULL_DOCS "Appended by each module's CMakeLists.txt, consumed by cmake/Install.cmake")
 
-# Third-party dependencies: a vendored cpp-httplib header, nlohmann/json
-# (reused, found or fetched) and GoogleTest when tests are enabled. OpenSSL is
-# looked up by the module that needs it (src/providers/openai).
-add_subdirectory(third_party)
+# Third-party C++ dependencies are fetched by CPM (nlohmann/json, cpp-httplib
+# and, with tests on, GoogleTest); OpenSSL and Threads are system libraries
+# found with find_package(). See cmake/Dependencies.cmake.
+include(cmake/Dependencies.cmake)
 
 # ---------------------------------------------------------------------------
 # Modules
@@ -82,7 +82,7 @@ set_target_properties(llm-sdk PROPERTIES EXPORT_NAME sdk)
 
 target_include_directories(llm-sdk
     INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 

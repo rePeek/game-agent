@@ -2,10 +2,9 @@
 #
 # It owns its HTTP transport: cpp-httplib, nlohmann/json and OpenSSL are
 # implementation details of this provider, not modules of their own. OpenSSL
-# and Threads must still reach a consumer that links the static archive, which
-# is what the INSTALL_INTERFACE entries below export.
-
-find_package(OpenSSL REQUIRED)
+# and Threads are found once in cmake/Dependencies.cmake; they must still
+# reach a consumer that links the static archive, which is what the
+# INSTALL_INTERFACE entries below export.
 
 add_library(llm-openai)
 add_library(llm::openai ALIAS llm-openai)
