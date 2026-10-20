@@ -1,9 +1,7 @@
 BasedOnStyle: Chromium
-# This defaults to 'Auto'. Explicitly set it for a while, so that
-# 'vector<vector<int> >' in existing files gets formatted to
-# 'vector<vector<int>>'. ('Auto' means that clang-format will only use
-# 'int>>' if the file already contains at least one such instance.)
-Standard: Cpp11
+# Language level used for parsing while formatting. The compiler standard is
+# set by CMake (C++23); this only controls clang-format's syntax parsing.
+Standard: Latest
 SortIncludes: true
 
 # Include organization settings
