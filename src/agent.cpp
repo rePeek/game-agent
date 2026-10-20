@@ -113,7 +113,14 @@ struct Agent::Impl {
     /// The framing the application supplied when the decision started.
     std::string decision_context;
     Message assistant;
-    std::vector<CommandCall> command_calls;  // in call order
+    /// One call and the one-shot token every prepared batch of it shares, so
+    /// the model call can be executed at most once across all batches.
+    struct Call {
+      CommandCall call;
+      std::shared_ptr<CommandExecution> execution =
+          std::make_shared<CommandExecution>();
+    };
+    std::vector<Call> calls;  // in call order
     std::shared_ptr<Liveness> live = std::make_shared<Liveness>();
   };
   std::vector<Pending> pending;  // at most one in this version
@@ -286,7 +293,12 @@ struct Agent::Impl {
         staged.registry_version = registry.version();
         staged.decision_context = attempt.decision_context;
         staged.assistant = result.completion.ToAssistantMessage();
-        staged.command_calls = result.completion.command_calls;
+        staged.calls.reserve(result.completion.command_calls.size());
+        for (const CommandCall& call : result.completion.command_calls) {
+          Pending::Call entry;
+          entry.call = call;
+          staged.calls.push_back(std::move(entry));
+        }
         result.decision_id = staged.decision_id;
         pending.push_back(std::move(staged));
       }
@@ -401,9 +413,9 @@ ConfigOutcome Agent::SetProvider(std::shared_ptr<IModelProvider> provider) {
   if (impl_->closed) {
     return {ConfigStatus::AgentClosed, "agent is closed"};
   }
-  if (impl_->in_flight_revision.has_value()) {
+  if (impl_->in_flight_revision.has_value() || !impl_->pending.empty()) {
     return {ConfigStatus::AgentBusy,
-            "cannot change the provider while a decision is in flight"};
+            "cannot change the provider while a decision is outstanding"};
   }
   impl_->provider = std::move(provider);
   return {};
@@ -442,6 +454,7 @@ CommandRegistrationResult Agent::RegisterCommandErased(
   const std::string agent_id = impl_->id;
 
   CommandRegistrationResult result;
+  std::size_t registry_size = 0;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->closed) {
@@ -454,12 +467,13 @@ CommandRegistrationResult Agent::RegisterCommandErased(
     } else {
       result = impl_->registry.Add(std::move(command));
     }
+    // Snapshot inside the lock: the registry is only mutated under it.
+    registry_size = impl_->registry.size();
   }
 
   if (result.ok()) {
     EmitLog(log_sink, LogLevel::Info, log_event::kCommandRegistered,
-            "command=" + name +
-                ", commands=" + std::to_string(impl_->registry.size()),
+            "command=" + name + ", commands=" + std::to_string(registry_size),
             LogContext{agent_id, 0});
   } else {
     EmitLog(log_sink, LogLevel::Warning,
@@ -589,7 +603,7 @@ PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
             {},
             "no decision with that id is awaiting results"};
   }
-  if (pending->command_calls.empty()) {
+  if (pending->calls.empty()) {
     return {PrepareStatus::NoCommands,
             {},
             "the decision contains no command calls"};
@@ -602,9 +616,10 @@ PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
 
   const std::weak_ptr<Liveness> live = pending->live;
   PrepareResult result;
-  result.commands.reserve(pending->command_calls.size());
+  result.commands.reserve(pending->calls.size());
 
-  for (const CommandCall& call : pending->command_calls) {
+  for (const Impl::Pending::Call& entry : pending->calls) {
+    const CommandCall& call = entry.call;
     const RegisteredCommand* command = impl_->registry.Find(call.name);
     if (command == nullptr) {
       result.status = PrepareStatus::InvalidArguments;
@@ -620,7 +635,8 @@ PrepareResult Agent::PrepareCommands(std::uint64_t decision_id) {
       return result;
     }
     result.commands.emplace_back(
-        call.id, call.name, std::move(binding.invoke), [live]() {
+        call.id, call.name, std::move(binding.invoke), entry.execution,
+        [live]() {
           const std::shared_ptr<Liveness> token = live.lock();
           return token != nullptr && !token->closed.load();
         });
@@ -660,13 +676,14 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
 
   // Every command call needs exactly one matching result, and nothing else: a
   // decision is recorded as a whole or not at all.
-  if (results.size() != pending->command_calls.size()) {
+  if (results.size() != pending->calls.size()) {
     reject("results do not cover every command call exactly once");
     return RecordOutcome::IncompleteResults;
   }
   std::vector<Message> result_messages;
-  result_messages.reserve(pending->command_calls.size());
-  for (const CommandCall& call : pending->command_calls) {
+  result_messages.reserve(pending->calls.size());
+  for (const Impl::Pending::Call& entry : pending->calls) {
+    const CommandCall& call = entry.call;
     const CommandResult* match = nullptr;
     std::size_t matches = 0;
     for (const CommandResult& candidate : results) {

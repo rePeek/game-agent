@@ -52,31 +52,30 @@ struct Counters {
 };
 
 void RegisterPressing(Agent& agent, Counters& counters) {
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "set_pressing", "Pressing",
-                      Params(Param<int>("level").Range(1, 5).Required()),
-                      [&counters](int level) -> CommandOutcome {
-                        ++counters.pressing;
-                        return CommandOutcome{
-                            true,
-                            "{\"level\":" + std::to_string(level) + "}",
-                            {}};
-                      })
-                  .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand(
+              "set_pressing", "Pressing",
+              Params(Param<int>("level").Range(1, 5).Required()),
+              [&counters](int level) -> CommandOutcome {
+                ++counters.pressing;
+                return CommandOutcome{
+                    true, "{\"level\":" + std::to_string(level) + "}", {}};
+              })
+          .ok());
 }
 
 void RegisterFormation(Agent& agent, Counters& counters) {
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "set_formation", "Formation",
-                      Params(Param<std::string>("formation").Required()),
-                      [&counters](const std::string& formation)
-                          -> CommandOutcome {
-                        ++counters.formation;
-                        return CommandOutcome{true, "\"" + formation + "\"", {}};
-                      })
-                  .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand(
+              "set_formation", "Formation",
+              Params(Param<std::string>("formation").Required()),
+              [&counters](const std::string& formation) -> CommandOutcome {
+                ++counters.formation;
+                return CommandOutcome{true, "\"" + formation + "\"", {}};
+              })
+          .ok());
 }
 
 DecisionResult Decide(Agent& agent, const std::string& revision) {
@@ -86,9 +85,9 @@ DecisionResult Decide(Agent& agent, const std::string& revision) {
 
 TEST(LlmAgentPrepareTest, BindsEveryCallWithoutRunningIt) {
   auto provider = std::make_shared<ScriptedProvider>();
-  provider->next = Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
-                          CommandCall{"call_b", "set_formation",
-                                      R"({"formation":"4-4-2"})"}});
+  provider->next = Batch(
+      {CommandCall{"call_a", "set_pressing", R"({"level":4})"},
+       CommandCall{"call_b", "set_formation", R"({"formation":"4-4-2"})"}});
   Agent agent(provider, Config());
   Counters counters;
   RegisterPressing(agent, counters);
@@ -118,8 +117,9 @@ TEST(LlmAgentPrepareTest, BindsEveryCallWithoutRunningIt) {
   EXPECT_TRUE(results[0].outcome.success);
   EXPECT_EQ(results[0].outcome.content_json, R"({"level":4})");
 
-  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id, std::move(results)),
-            RecordOutcome::Recorded);
+  EXPECT_EQ(
+      agent.RecordCommandResults(decision.decision_id, std::move(results)),
+      RecordOutcome::Recorded);
 }
 
 TEST(LlmAgentPrepareTest, InvokingIsOneShot) {
@@ -151,9 +151,9 @@ TEST(LlmAgentPrepareTest, InvokingIsOneShot) {
 TEST(LlmAgentPrepareTest, ABatchWithOneUnbindableCallPreparesNone) {
   auto provider = std::make_shared<ScriptedProvider>();
   // set_formation is not registered.
-  provider->next = Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
-                          CommandCall{"call_b", "set_formation",
-                                      R"({"formation":"4-4-2"})"}});
+  provider->next = Batch(
+      {CommandCall{"call_a", "set_pressing", R"({"level":4})"},
+       CommandCall{"call_b", "set_formation", R"({"formation":"4-4-2"})"}});
   Agent agent(provider, Config());
   Counters counters;
   RegisterPressing(agent, counters);
@@ -170,9 +170,9 @@ TEST(LlmAgentPrepareTest, ABatchWithOneUnbindableCallPreparesNone) {
 
 TEST(LlmAgentPrepareTest, InvalidArgumentsFailTheWholeBatch) {
   auto provider = std::make_shared<ScriptedProvider>();
-  provider->next = Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
-                          CommandCall{"call_b", "set_pressing",
-                                      R"({"level":"high"})"}});
+  provider->next =
+      Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
+             CommandCall{"call_b", "set_pressing", R"({"level":"high"})"}});
   Agent agent(provider, Config());
   Counters counters;
   RegisterPressing(agent, counters);
@@ -209,7 +209,8 @@ TEST(LlmAgentPrepareTest, DiscardingOrClosingInvalidatesPreparedCommands) {
   PrepareResult prepared_second = agent.PrepareCommands(second.decision_id);
   ASSERT_TRUE(prepared_second.ok()) << prepared_second.error;
   agent.Close();
-  const CommandResult after_close = std::move(prepared_second.commands[0]).Invoke();
+  const CommandResult after_close =
+      std::move(prepared_second.commands[0]).Invoke();
   EXPECT_FALSE(after_close.outcome.success);
   EXPECT_EQ(counters.pressing, 0);
 }
@@ -232,17 +233,14 @@ TEST(LlmAgentPrepareTest, PrepareRefusesUnknownDecisionsAndClosedAgents) {
 
 TEST(LlmAgentPrepareTest, AThrowingCallbackIsReportedAsAFailedOutcome) {
   auto provider = std::make_shared<ScriptedProvider>();
-  provider->next =
-      Batch({CommandCall{"call_a", "explode", R"({"level":1})"}});
+  provider->next = Batch({CommandCall{"call_a", "explode", R"({"level":1})"}});
   Agent agent(provider, Config());
-  ASSERT_TRUE(agent
-                  .RegisterCommand(
-                      "explode", "",
-                      Params(Param<int>("level")),
-                      [](int) -> CommandOutcome {
-                        throw std::runtime_error("boom");
-                      })
-                  .ok());
+  ASSERT_TRUE(
+      agent
+          .RegisterCommand(
+              "explode", "", Params(Param<int>("level").Required()),
+              [](int) -> CommandOutcome { throw std::runtime_error("boom"); })
+          .ok());
 
   const DecisionResult decision = Decide(agent, "rev-1");
   PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
@@ -251,6 +249,35 @@ TEST(LlmAgentPrepareTest, AThrowingCallbackIsReportedAsAFailedOutcome) {
   const CommandResult result = std::move(prepared.commands[0]).Invoke();
   EXPECT_FALSE(result.outcome.success);
   EXPECT_NE(result.outcome.error_message.find("boom"), std::string::npos);
+  agent.DiscardDecision(decision.decision_id);
+}
+
+TEST(LlmAgentPrepareTest, ACommandCallExecutesAtMostOnceAcrossBatches) {
+  auto provider = std::make_shared<ScriptedProvider>();
+  provider->next =
+      Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"}});
+  Agent agent(provider, Config());
+  Counters counters;
+  RegisterPressing(agent, counters);
+
+  const DecisionResult decision = Decide(agent, "rev-1");
+  PrepareResult batch_a = agent.PrepareCommands(decision.decision_id);
+  PrepareResult batch_b = agent.PrepareCommands(decision.decision_id);
+  ASSERT_TRUE(batch_a.ok()) << batch_a.error;
+  ASSERT_TRUE(batch_b.ok()) << batch_b.error;
+
+  const CommandResult first = std::move(batch_a.commands[0]).Invoke();
+  EXPECT_TRUE(first.outcome.success);
+  EXPECT_EQ(counters.pressing, 1);
+
+  // A second batch prepared from the same model call must not run it again.
+  const CommandResult second = std::move(batch_b.commands[0]).Invoke();
+  EXPECT_FALSE(second.outcome.success);
+  EXPECT_NE(second.outcome.error_message.find("already executed"),
+            std::string::npos);
+  EXPECT_EQ(counters.pressing, 1)
+      << "a non-idempotent command must execute at most once";
+
   agent.DiscardDecision(decision.decision_id);
 }
 

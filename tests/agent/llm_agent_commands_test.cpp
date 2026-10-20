@@ -170,5 +170,28 @@ TEST(LlmAgentCommandsTest, ClosedAgentsRefuseConfigurationAndRegistration) {
   EXPECT_EQ(agent.DecideAsync().get().status, DecisionStatus::Closed);
 }
 
+TEST(LlmAgentCommandsTest, ProviderCannotChangeWhileADecisionIsOutstanding) {
+  auto provider = std::make_shared<GatedProvider>();
+  Agent agent(provider, Config());
+
+  agent.UpdateContext(Update("rev-1"));
+  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+  EXPECT_EQ(agent.SetProvider(std::make_shared<StubProvider>()).status,
+            ConfigStatus::AgentBusy)
+      << "in flight";
+
+  provider->Release();
+  const DecisionResult decision = future.get();
+  ASSERT_TRUE(decision.completion.IsSuccess());
+  EXPECT_EQ(agent.SetProvider(std::make_shared<StubProvider>()).status,
+            ConfigStatus::AgentBusy)
+      << "awaiting results";
+
+  EXPECT_EQ(agent.PendingDecisionCount(), 1u);
+  EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
+  EXPECT_TRUE(agent.SetProvider(std::make_shared<StubProvider>()).ok());
+}
+
 }  // namespace
 }  // namespace llm

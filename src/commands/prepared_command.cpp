@@ -30,6 +30,16 @@ CommandResult PreparedCommand::Invoke() && {
     invoke_ = nullptr;
     return result;
   }
+  // The shared token makes the model call one-shot, not just this object: a
+  // second batch prepared from the same decision cannot execute it again.
+  if (execution_ != nullptr && !execution_->TryClaim()) {
+    result.outcome.success = false;
+    result.outcome.error_message =
+        "command for this call was already executed by another prepared batch";
+    invoked_ = true;
+    invoke_ = nullptr;
+    return result;
+  }
 
   invoked_ = true;
   std::function<CommandOutcome()> callback = std::move(invoke_);
@@ -38,7 +48,8 @@ CommandResult PreparedCommand::Invoke() && {
     result.outcome = callback();
   } catch (const std::exception& error) {
     result.outcome.success = false;
-    result.outcome.error_message = std::string("command threw: ") + error.what();
+    result.outcome.error_message =
+        std::string("command threw: ") + error.what();
   } catch (...) {
     result.outcome.success = false;
     result.outcome.error_message = "command threw an unknown error";
