@@ -38,7 +38,8 @@ int main() {
   llm::CommandResult tool_result;
   tool_result.command_call_id = "call_001";
   tool_result.name = "set_pressing_intensity";
-  tool_result.outcome.success = true; tool_result.outcome.content_json = R"({"applied":true})";
+  tool_result.outcome.success = true;
+  tool_result.outcome.content_json = R"({"applied":true})";
 
   llm::ModelRequest request;
   request.model = "gpt-5.6";
@@ -54,7 +55,8 @@ int main() {
   request.max_command_calls = 4;
 
   Check(request.messages.size() == 4u, "context keeps four messages");
-  Check(request.messages[2].HasCommandCalls(), "assistant turn keeps its calls");
+  Check(request.messages[2].HasCommandCalls(),
+        "assistant turn keeps its calls");
   Check(request.messages[3].command_call_id == call.id, "tool turn answers it");
   Check(request.command_choice.mode == llm::CommandChoiceMode::Required,
         "forced tool calling is the default");
@@ -79,7 +81,8 @@ int main() {
 
   const llm::Message assistant = result.ToAssistantMessage();
   Check(assistant.role == llm::Role::Assistant, "assistant message role");
-  Check(assistant.command_calls.size() == 1u, "assistant message keeps the batch");
+  Check(assistant.command_calls.size() == 1u,
+        "assistant message keeps the batch");
   Check(assistant.command_calls[0].arguments_json == raw_arguments,
         "batch arguments survive the round trip");
 

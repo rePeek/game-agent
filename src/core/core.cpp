@@ -80,7 +80,6 @@ std::string FormatCommandResult(const CommandOutcome& outcome) {
 
 }  // namespace
 
-
 std::string CommandCall::ToString() const {
   return "CommandCall{id='" + id + "', name='" + name +
          "', arguments=" + arguments_json + "}";
@@ -185,7 +184,8 @@ std::string CommandChoice::ToString() const {
   return "unknown";
 }
 
-const CommandDefinition* ModelRequest::FindCommand(const std::string& name) const {
+const CommandDefinition* ModelRequest::FindCommand(
+    const std::string& name) const {
   for (const auto& command : commands) {
     if (command.name == name) {
       return &command;
@@ -260,7 +260,6 @@ std::size_t EstimateTokens(std::string_view text) {
   // tiny non-empty message is not counted as free.
   return text.size() / 4 + 1;
 }
-
 
 void EmitLog(const std::shared_ptr<ILogger>& logger,
              LogLevel level,

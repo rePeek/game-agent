@@ -34,7 +34,8 @@ TEST(LlmCoreMessageTest, FactoriesSetRoleAndContent) {
   EXPECT_EQ(ToString(system.role), "system");
   EXPECT_EQ(ToString(user.role), "user");
   EXPECT_EQ(ToString(assistant.role), "assistant");
-  EXPECT_EQ(ToString(Message::CommandResultMessage(CommandResult{}).role), "tool");
+  EXPECT_EQ(ToString(Message::CommandResultMessage(CommandResult{}).role),
+            "tool");
 }
 
 TEST(LlmCoreMessageTest, AssistantCommandCallsKeepsBatchAndOrder) {
@@ -54,14 +55,16 @@ TEST(LlmCoreMessageTest, CommandResultCarriesCallIdAndPayload) {
   CommandResult result;
   result.command_call_id = "call_001";
   result.name = "set_pressing_intensity";
-  result.outcome.success = true; result.outcome.content_json = R"({"applied":true,"intensity":3})";
+  result.outcome.success = true;
+  result.outcome.content_json = R"({"applied":true,"intensity":3})";
 
   const Message message = Message::CommandResultMessage(result);
 
   EXPECT_EQ(message.role, Role::Tool);
   EXPECT_EQ(message.command_call_id, "call_001");
   EXPECT_EQ(message.name, "set_pressing_intensity");
-  EXPECT_EQ(message.content, R"({"ok":true,"result":{"applied":true,"intensity":3}})");
+  EXPECT_EQ(message.content,
+            R"({"ok":true,"result":{"applied":true,"intensity":3}})");
 }
 
 TEST(LlmCoreMessageTest, FailedCommandResultsCarryTheErrorNotAnImpliedFlag) {
@@ -78,8 +81,9 @@ TEST(LlmCoreMessageTest, FailedCommandResultsCarryTheErrorNotAnImpliedFlag) {
   // A failure may still name what it observed.
   result.outcome.content_json = R"({"minute":62})";
   const Message detailed = Message::CommandResultMessage(result);
-  EXPECT_EQ(detailed.content,
-            R"({"ok":false,"error":"substitution_not_allowed","detail":{"minute":62}})");
+  EXPECT_EQ(
+      detailed.content,
+      R"({"ok":false,"error":"substitution_not_allowed","detail":{"minute":62}})");
 
   // The error text is escaped before it becomes JSON.
   result.outcome.error_message = "he said \"no\"";
@@ -102,7 +106,8 @@ TEST(LlmCoreMessageTest, ExpressesPreviousDecisionAsContext) {
     CommandResult result;
     result.command_call_id = call.id;
     result.name = call.name;
-    result.outcome.success = true; result.outcome.content_json = R"({"applied":true})";
+    result.outcome.success = true;
+    result.outcome.content_json = R"({"applied":true})";
     context.push_back(Message::CommandResultMessage(result));
   }
   context.push_back(Message::User("They switched to a low block."));
@@ -158,10 +163,10 @@ TEST(LlmCoreRequestTest, CommandChoiceVariants) {
 TEST(LlmCoreRequestTest, FindsToolByName) {
   ModelRequest request;
   request.commands.push_back(CommandDefinition{"set_pressing_intensity",
-                                         "Pressing intensity",
-                                         R"({"type":"object"})", true});
-  request.commands.push_back(CommandDefinition{"keep_current_tactics", "No change",
-                                         R"({"type":"object"})", false});
+                                               "Pressing intensity",
+                                               R"({"type":"object"})", true});
+  request.commands.push_back(CommandDefinition{
+      "keep_current_tactics", "No change", R"({"type":"object"})", false});
 
   ASSERT_TRUE(request.HasCommands());
   const CommandDefinition* found = request.FindCommand("keep_current_tactics");
@@ -258,8 +263,8 @@ TEST(LlmCoreProviderTest, CompleteIsTheWholeSurface) {
   ModelRequest request;
   request.model = "test-model";
   request.commands.push_back(CommandDefinition{"set_pressing_intensity",
-                                         "Pressing intensity",
-                                         R"({"type":"object"})", true});
+                                               "Pressing intensity",
+                                               R"({"type":"object"})", true});
 
   const CompletionResult result = provider.Complete(request);
 

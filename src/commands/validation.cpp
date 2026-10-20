@@ -254,7 +254,6 @@ void CheckSchemaSupported(const Json& schema,
       continue;
     }
 
-
     if (it.key() == "properties") {
       if (!it.value().is_object()) {
         AddProblem(problems, ProblemKind::Schema,
@@ -517,8 +516,7 @@ std::string ValidationReport::Summary() const {
   return summary;
 }
 
-JsonSchemaCommandValidator::JsonSchemaCommandValidator(
-    ValidationLimits limits)
+JsonSchemaCommandValidator::JsonSchemaCommandValidator(ValidationLimits limits)
     : limits_(std::move(limits)) {}
 
 ValidationReport JsonSchemaCommandValidator::ValidateCommandSchemas(
@@ -598,15 +596,16 @@ ValidationReport JsonSchemaCommandValidator::Validate(
 
   if (command_calls.size() < limits_.min_command_calls) {
     ValidationIssue issue;
-    issue.message = "expected at least " +
-                    std::to_string(limits_.min_command_calls) +
-                    " command call(s), got " + std::to_string(command_calls.size());
+    issue.message =
+        "expected at least " + std::to_string(limits_.min_command_calls) +
+        " command call(s), got " + std::to_string(command_calls.size());
     report.issues.push_back(std::move(issue));
   }
   if (effective_max > 0 && command_calls.size() > effective_max) {
     ValidationIssue issue;
     issue.message = "expected at most " + std::to_string(effective_max) +
-                    " command call(s), got " + std::to_string(command_calls.size());
+                    " command call(s), got " +
+                    std::to_string(command_calls.size());
     report.issues.push_back(std::move(issue));
   }
 
@@ -646,8 +645,9 @@ ValidationReport JsonSchemaCommandValidator::Validate(
       continue;
     }
 
-    const CommandDefinition* command =
-        limits_.require_known_commands ? request.FindCommand(call.name) : nullptr;
+    const CommandDefinition* command = limits_.require_known_commands
+                                           ? request.FindCommand(call.name)
+                                           : nullptr;
     if (limits_.require_known_commands && command == nullptr) {
       add_issue(ValidationIssueKind::Arguments,
                 "is not one of the commands offered in this request");

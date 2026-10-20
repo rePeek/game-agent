@@ -32,7 +32,8 @@ CommandDefinition PressingTool() {
   return tool;
 }
 
-std::string CommandCallResponse(const std::string& arguments = R"({"level":4})") {
+std::string CommandCallResponse(
+    const std::string& arguments = R"({"level":4})") {
   const nlohmann::json body{
       {"model", "gpt-5.6"},
       {"choices",
@@ -131,7 +132,8 @@ TEST(LlmOpenAILoggingTest, StartedAndCompletedShareTheRequestContext) {
   EXPECT_EQ(records[0].event, log_event::kRequestStarted);
   EXPECT_EQ(records[0].level, LogLevel::Debug);
   EXPECT_NE(records[0].message.find("model=gpt-5.6"), std::string::npos);
-  EXPECT_NE(records[0].message.find("command_choice=required"), std::string::npos);
+  EXPECT_NE(records[0].message.find("command_choice=required"),
+            std::string::npos);
 
   EXPECT_EQ(records[1].event, log_event::kRequestCompleted);
   EXPECT_EQ(records[1].level, LogLevel::Info);
@@ -233,7 +235,8 @@ TEST(LlmOpenAILoggingTest, ValidationFailuresAreLogged) {
   const std::vector<std::string> completed =
       fixture.logger->Messages(log_event::kRequestCompleted);
   ASSERT_EQ(completed.size(), 1u);
-  EXPECT_NE(completed[0].find("status=invalid command calls"), std::string::npos);
+  EXPECT_NE(completed[0].find("status=invalid command calls"),
+            std::string::npos);
 }
 
 TEST(LlmOpenAILoggingTest, UnenforceableSchemaIsLoggedBeforeSending) {

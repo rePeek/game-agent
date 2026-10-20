@@ -1,10 +1,10 @@
 #pragma once
 
+#include "llm/commands/validation.h"
 #include "llm/core/logger.h"
 #include "llm/core/provider.h"
 #include "llm/core/types.h"
 #include "llm/providers/openai/transport.h"
-#include "llm/commands/validation.h"
 
 #include <memory>
 #include <optional>

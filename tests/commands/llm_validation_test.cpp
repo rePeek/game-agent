@@ -92,11 +92,11 @@ TEST(LlmValidationTest, EnforcesTheBatchSizeWindow) {
   ValidationLimits two_minimum;
   two_minimum.min_command_calls = 2;
   EXPECT_TRUE(Validate(DefaultRequest(), two, two_minimum).ok);
-  EXPECT_FALSE(
-      Validate(DefaultRequest(),
-               {CommandCall{"call_1", "set_pressing_intensity", R"({"level":1})"}},
-               two_minimum)
-          .ok);
+  EXPECT_FALSE(Validate(DefaultRequest(),
+                        {CommandCall{"call_1", "set_pressing_intensity",
+                                     R"({"level":1})"}},
+                        two_minimum)
+                   .ok);
 
   // Upper bound from the request itself.
   ModelRequest capped = DefaultRequest();
@@ -121,15 +121,18 @@ TEST(LlmValidationTest, RequiresIdsAndToolNames) {
 }
 
 TEST(LlmValidationTest, RequiresParseableObjectArguments) {
-  EXPECT_FALSE(Validate(DefaultRequest(),
-                        {CommandCall{"call_1", "set_pressing_intensity", "{oops"}})
-                   .ok);
-  EXPECT_FALSE(Validate(DefaultRequest(),
-                        {CommandCall{"call_1", "set_pressing_intensity", "[1,2]"}})
-                   .ok);
-  EXPECT_FALSE(Validate(DefaultRequest(),
-                        {CommandCall{"call_1", "set_pressing_intensity", "null"}})
-                   .ok);
+  EXPECT_FALSE(
+      Validate(DefaultRequest(),
+               {CommandCall{"call_1", "set_pressing_intensity", "{oops"}})
+          .ok);
+  EXPECT_FALSE(
+      Validate(DefaultRequest(),
+               {CommandCall{"call_1", "set_pressing_intensity", "[1,2]"}})
+          .ok);
+  EXPECT_FALSE(
+      Validate(DefaultRequest(),
+               {CommandCall{"call_1", "set_pressing_intensity", "null"}})
+          .ok);
 }
 
 TEST(LlmValidationTest, ValidatesTypesAndRequiredProperties) {
@@ -142,24 +145,25 @@ TEST(LlmValidationTest, ValidatesTypesAndRequiredProperties) {
             std::string::npos);
 
   // level is required
-  const ValidationReport missing = Validate(
-      DefaultRequest(), {CommandCall{"call_1", "set_pressing_intensity", "{}"}});
+  const ValidationReport missing =
+      Validate(DefaultRequest(),
+               {CommandCall{"call_1", "set_pressing_intensity", "{}"}});
   EXPECT_FALSE(missing.ok);
   EXPECT_NE(missing.Summary().find("missing required property 'level'"),
             std::string::npos);
 }
 
 TEST(LlmValidationTest, ValidatesEnumAndAdditionalProperties) {
-  const ValidationReport bad_enum = Validate(
-      DefaultRequest(),
-      {CommandCall{"call_1", "set_defensive_line", R"({"height":"sideways"})"}});
+  const ValidationReport bad_enum =
+      Validate(DefaultRequest(), {CommandCall{"call_1", "set_defensive_line",
+                                              R"({"height":"sideways"})"}});
   EXPECT_FALSE(bad_enum.ok);
   EXPECT_NE(bad_enum.Summary().find("not one of the allowed values"),
             std::string::npos);
 
-  const ValidationReport extra_key =
-      Validate(DefaultRequest(), {CommandCall{"call_1", "set_pressing_intensity",
-                                           R"({"level":1,"urgency":"now"})"}});
+  const ValidationReport extra_key = Validate(
+      DefaultRequest(), {CommandCall{"call_1", "set_pressing_intensity",
+                                     R"({"level":1,"urgency":"now"})"}});
   EXPECT_FALSE(extra_key.ok);
   EXPECT_NE(extra_key.Summary().find("unexpected property 'urgency'"),
             std::string::npos);
@@ -182,9 +186,11 @@ TEST(LlmValidationTest, ValidatesNumericAndStringBounds) {
       "note",
       R"({"type":"object","properties":{"text":{"type":"string","minLength":3,"maxLength":5}},"required":["text"]})")});
   EXPECT_TRUE(
-      Validate(request, {CommandCall{"call_1", "note", R"({"text":"abc"})"}}).ok);
+      Validate(request, {CommandCall{"call_1", "note", R"({"text":"abc"})"}})
+          .ok);
   EXPECT_FALSE(
-      Validate(request, {CommandCall{"call_1", "note", R"({"text":"ab"})"}}).ok);
+      Validate(request, {CommandCall{"call_1", "note", R"({"text":"ab"})"}})
+          .ok);
   EXPECT_FALSE(
       Validate(request, {CommandCall{"call_1", "note", R"({"text":"abcdef"})"}})
           .ok);
@@ -217,27 +223,29 @@ TEST(LlmValidationTest, ValidatesNestedObjectsListsAndAlternatives) {
 
   const ValidationReport ok = Validate(
       request,
-      {CommandCall{"call_1", "match_context",
-                R"({"board":{"pressing":3},"players":["a"],"reason":null})"}});
+      {CommandCall{
+          "call_1", "match_context",
+          R"({"board":{"pressing":3},"players":["a"],"reason":null})"}});
   EXPECT_TRUE(ok.ok) << ok.Summary();
 
   const ValidationReport nested = Validate(
-      request, {CommandCall{"call_1", "match_context",
-                         R"({"board":{"pressing":"high"},"players":["a"]})"}});
+      request,
+      {CommandCall{"call_1", "match_context",
+                   R"({"board":{"pressing":"high"},"players":["a"]})"}});
   EXPECT_FALSE(nested.ok);
   EXPECT_NE(nested.Summary().find("board.pressing must be 'integer'"),
             std::string::npos);
 
-  const ValidationReport list =
-      Validate(request, {CommandCall{"call_1", "match_context",
-                                  R"({"board":{"pressing":3},"players":[]})"}});
+  const ValidationReport list = Validate(
+      request, {CommandCall{"call_1", "match_context",
+                            R"({"board":{"pressing":3},"players":[]})"}});
   EXPECT_FALSE(list.ok);
   EXPECT_NE(list.Summary().find("players needs at least 1 items"),
             std::string::npos);
 
   const ValidationReport items = Validate(
       request, {CommandCall{"call_1", "match_context",
-                         R"({"board":{"pressing":3},"players":[7]})"}});
+                            R"({"board":{"pressing":3},"players":[7]})"}});
   EXPECT_FALSE(items.ok);
   EXPECT_NE(items.Summary().find("players[0] must be 'string'"),
             std::string::npos);
@@ -245,7 +253,7 @@ TEST(LlmValidationTest, ValidatesNestedObjectsListsAndAlternatives) {
   const ValidationReport any_of = Validate(
       request,
       {CommandCall{"call_1", "match_context",
-                R"({"board":{"pressing":3},"players":["a"],"reason":5})"}});
+                   R"({"board":{"pressing":3},"players":["a"],"reason":5})"}});
   EXPECT_FALSE(any_of.ok);
   EXPECT_NE(any_of.Summary().find("matches no allowed shape"),
             std::string::npos);
@@ -260,8 +268,8 @@ TEST(LlmValidationTest, LimitsCanBeRelaxed) {
 
   // Unknown tool, no id, arguments that are not an object: only the JSON
   // requirement is left, because the caller turned the rest off.
-  const ValidationReport report =
-      Validate(DefaultRequest(), {CommandCall{"", "whatever", "[1]"}}, permissive);
+  const ValidationReport report = Validate(
+      DefaultRequest(), {CommandCall{"", "whatever", "[1]"}}, permissive);
   EXPECT_FALSE(report.ok);
 
   ValidationLimits only_json;
@@ -270,9 +278,9 @@ TEST(LlmValidationTest, LimitsCanBeRelaxed) {
   only_json.require_known_commands = false;
   only_json.require_arguments_object = false;
   only_json.validate_schema = false;
-  EXPECT_TRUE(
-      Validate(DefaultRequest(), {CommandCall{"", "whatever", "[1]"}}, only_json)
-          .ok);
+  EXPECT_TRUE(Validate(DefaultRequest(), {CommandCall{"", "whatever", "[1]"}},
+                       only_json)
+                  .ok);
 }
 
 TEST(LlmValidationTest, ReportsUnusableToolSchema) {
@@ -287,10 +295,10 @@ TEST(LlmValidationTest, ReportsUnusableToolSchema) {
 }
 
 TEST(LlmValidationTest, SummaryListsEveryIssueWithPosition) {
-  const ValidationReport report =
-      Validate(DefaultRequest(),
-               {CommandCall{"call_1", "set_pressing_intensity", R"({"level":0})"},
-                CommandCall{"call_2", "nope", R"({})"}});
+  const ValidationReport report = Validate(
+      DefaultRequest(),
+      {CommandCall{"call_1", "set_pressing_intensity", R"({"level":0})"},
+       CommandCall{"call_2", "nope", R"({})"}});
 
   EXPECT_FALSE(report.ok);
   ASSERT_EQ(report.issues.size(), 2u);
@@ -375,7 +383,8 @@ TEST(LlmValidationTest, AnnotationsAreAllowed) {
 TEST(LlmValidationTest, ValidateCommandSchemasChecksWithoutABatch) {
   const JsonSchemaCommandValidator validator;
 
-  const ValidationReport ok = validator.ValidateCommandSchemas(DefaultRequest());
+  const ValidationReport ok =
+      validator.ValidateCommandSchemas(DefaultRequest());
   EXPECT_TRUE(ok.ok) << ok.Summary();
 
   const ValidationReport broken = validator.ValidateCommandSchemas(RequestWith({Tool(
@@ -432,31 +441,33 @@ TEST(LlmValidationTest, KnownKeywordsWithTheWrongValueShapeAreRefused) {
 
   // An 'enum' that is not an array would otherwise be silently ignored, and
   // Success would claim a check that never happened.
-  const ValidationReport bad_enum = validator.ValidateCommandSchemas(RequestWith(
-      {Tool("t", R"({"type":"object","properties":{"a":{"enum":"x"}}})")}));
+  const ValidationReport bad_enum =
+      validator.ValidateCommandSchemas(RequestWith(
+          {Tool("t", R"({"type":"object","properties":{"a":{"enum":"x"}}})")}));
   EXPECT_FALSE(bad_enum.ok);
   EXPECT_TRUE(bad_enum.HasSchemaIssues());
   EXPECT_NE(bad_enum.Summary().find("non-empty array"), std::string::npos);
 
   // A bound expressed as a string cannot be enforced numerically.
-  const ValidationReport bad_minimum = validator.ValidateCommandSchemas(RequestWith(
-      {Tool("t",
-            R"({"type":"object","properties":{"a":{"type":"integer","minimum":"1"}}})")}));
+  const ValidationReport bad_minimum =
+      validator.ValidateCommandSchemas(RequestWith({Tool(
+          "t",
+          R"({"type":"object","properties":{"a":{"type":"integer","minimum":"1"}}})")}));
   EXPECT_FALSE(bad_minimum.ok);
-  EXPECT_NE(bad_minimum.Summary().find("must be a number"),
-            std::string::npos);
+  EXPECT_NE(bad_minimum.Summary().find("must be a number"), std::string::npos);
 
   // minItems must be a non-negative integer, not a string or a float.
-  const ValidationReport bad_min_items = validator.ValidateCommandSchemas(RequestWith(
-      {Tool("t",
-            R"({"type":"object","properties":{"a":{"type":"array","minItems":"1"}}})")}));
+  const ValidationReport bad_min_items =
+      validator.ValidateCommandSchemas(RequestWith({Tool(
+          "t",
+          R"({"type":"object","properties":{"a":{"type":"array","minItems":"1"}}})")}));
   EXPECT_FALSE(bad_min_items.ok);
   EXPECT_NE(bad_min_items.Summary().find("non-negative integer"),
             std::string::npos);
 
   // required must be an array of names.
-  const ValidationReport bad_required = validator.ValidateCommandSchemas(RequestWith(
-      {Tool("t", R"({"type":"object","required":"a"})")}));
+  const ValidationReport bad_required = validator.ValidateCommandSchemas(
+      RequestWith({Tool("t", R"({"type":"object","required":"a"})")}));
   EXPECT_FALSE(bad_required.ok);
   EXPECT_NE(bad_required.Summary().find("array of property names"),
             std::string::npos);
@@ -474,7 +485,6 @@ TEST(LlmValidationTest, DuplicateCommandDefinitionsAreRefused) {
   EXPECT_NE(report.Summary().find("more than once"), std::string::npos)
       << report.Summary();
 }
-
 
 }  // namespace
 }  // namespace llm

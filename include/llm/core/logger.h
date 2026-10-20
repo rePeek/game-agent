@@ -103,7 +103,8 @@ inline constexpr std::string_view kCommandsPrepareRejected =
     "commands.prepare_rejected";
 
 // Validation.
-inline constexpr std::string_view kValidationFailed = "commands.validation_failed";
+inline constexpr std::string_view kValidationFailed =
+    "commands.validation_failed";
 
 }  // namespace log_event
 

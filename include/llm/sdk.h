@@ -19,9 +19,10 @@
 #include "llm/core/types.h"
 
 // Commands: typed registration, schema generation and batch validation.
+#include "llm/commands/validation.h"
+
 #include "llm/commands/arguments.hpp"
 #include "llm/commands/parameter.hpp"
-#include "llm/commands/validation.h"
 
 // Context: the history the agent projects into a request.
 #include "llm/context/context.h"
