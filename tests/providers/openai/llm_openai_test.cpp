@@ -153,6 +153,24 @@ struct Fixture {
   }
 };
 
+// A base URL is accepted both as an origin (https://api.openai.com) and with
+// the version path many clients expect (https://api.openai.com/v1).
+TEST(LlmOpenAIProtocolTest, AcceptsBaseUrlsWithOrWithoutTheVersionPath) {
+  for (const char* base_url : {"https://example.com", "https://example.com/v1",
+                               "https://example.com/v1/"}) {
+    Fixture fixture;
+    fixture.transport->responses.push_back(
+        FakeTransport::Ok(MakeResponse(TwoCallsMessage())));
+    ProviderOptions options = fixture.Options();
+    options.base_url = base_url;
+    fixture.Complete(MakeRequest(), std::move(options));
+    ASSERT_EQ(fixture.transport->requests.size(), 1u);
+    EXPECT_EQ(fixture.transport->requests[0].url,
+              "https://example.com/v1/chat/completions")
+        << base_url;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------

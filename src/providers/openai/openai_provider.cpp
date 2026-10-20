@@ -112,6 +112,16 @@ std::string BuildUrl(const std::string& base_url) {
   while (!base.empty() && base.back() == '/') {
     base.pop_back();
   }
+  // Accept both base-URL conventions: an origin like https://api.openai.com
+  // (append /v1/chat/completions) and one that already ends in /v1, which is
+  // what the OpenAI SDKs expect (append /chat/completions).
+  constexpr char kVersionPath[] = "/v1";
+  constexpr std::size_t kVersionPathLength = 3;
+  if (base.size() >= kVersionPathLength &&
+      base.compare(base.size() - kVersionPathLength, kVersionPathLength,
+                   kVersionPath) == 0) {
+    return base + "/chat/completions";
+  }
   return base + kCompletionsPath;
 }
 
