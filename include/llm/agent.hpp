@@ -32,6 +32,7 @@
 ///  * a decision enters the history atomically: the assistant turn with its
 ///    command calls plus one result per call, or nothing at all.
 
+#include "llm/commands/validation.h"
 #include "llm/context/context.h"
 #include "llm/core/logger.h"
 #include "llm/core/provider.h"
@@ -75,8 +76,10 @@ struct DecisionResult {
 enum class StartStatus {
   Started,
   NotConfigured,    // no provider or no model has been set yet
+  NoCommands,       // nothing is registered, so a forced call is impossible
   Busy,             // a request is in flight or a decision awaits results
   ContextTooLarge,  // the request would exceed the input token budget
+  InvalidConfig,    // the context budget configuration is inconsistent
   Closed,           // the agent was closed
   Failed,           // the model call could not be launched
 };
@@ -96,6 +99,7 @@ enum class RecordOutcome {
   UnknownDecision,    // no such decision is awaiting results
   IncompleteResults,  // the results do not cover exactly the pending calls
   NameMismatch,       // a result names a different command than the call did
+  InvalidResultJson,  // a result's content_json is not well-formed JSON
   Closed,
 };
 

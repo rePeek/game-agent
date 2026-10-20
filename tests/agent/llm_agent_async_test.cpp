@@ -13,6 +13,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -52,6 +53,7 @@ class GatedProvider : public IModelProvider {
  public:
   CompletionResult next = SuccessfulBatch();
   std::atomic<int> calls{0};
+  std::atomic<int> completed{0};
 
   std::string Name() const override { return "gated"; }
   CompletionResult Complete(const ModelRequest&) override {
@@ -59,6 +61,7 @@ class GatedProvider : public IModelProvider {
     ++calls;
     entered_cv_.notify_all();
     release_cv_.wait(lock, [this] { return released_; });
+    ++completed;
     return next;
   }
 
@@ -117,6 +120,7 @@ TEST(LlmAgentAsyncTest, StartingDoesNotBlockAndResolvesOnce) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
   RegisterPressing(agent);
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   const StartOutcome started = agent.DecideAsync();
@@ -145,6 +149,7 @@ TEST(LlmAgentAsyncTest, StartingDoesNotBlockAndResolvesOnce) {
 TEST(LlmAgentAsyncTest, OnlyOneDecisionRunsAtATime) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -163,6 +168,7 @@ TEST(LlmAgentAsyncTest, OnlyOneDecisionRunsAtATime) {
 TEST(LlmAgentAsyncTest, CloseDuringFlightDiscardsTheResult) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -182,6 +188,7 @@ TEST(LlmAgentAsyncTest, CloseDuringFlightDiscardsTheResult) {
 TEST(LlmAgentAsyncTest, StartingAfterCloseIsRefusedImmediately) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -198,6 +205,7 @@ TEST(LlmAgentAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
       ->Release();  // the gate stays open: each decision resolves on its own
 
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
@@ -221,6 +229,7 @@ TEST(LlmAgentAsyncTest, AgentCanBeRecreatedRepeatedly) {
     auto provider = std::make_shared<GatedProvider>();
     provider->Release();
     Agent agent(provider, DefaultConfig());
+    RegisterPressing(agent);
     agent.UpdateContext(Update("rev-1"));
     EXPECT_TRUE(test::DecideOrThrow(agent).completion.IsSuccess());
     // The destructor waits out any in-flight request; no thread is left behind.
@@ -230,6 +239,7 @@ TEST(LlmAgentAsyncTest, AgentCanBeRecreatedRepeatedly) {
 
 TEST(LlmAgentAsyncTest, ThrowingProviderIsReportedNotThrown) {
   Agent agent(std::make_shared<ThrowingProvider>(), DefaultConfig());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-1"));
   const DecisionResult decision = test::DecideOrThrow(agent);
@@ -258,6 +268,7 @@ TEST(LlmAgentAsyncTest, ThrowingProviderLeavesTheAgentUsable) {
 
   auto provider = std::make_shared<FlakyProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-1"));
@@ -329,6 +340,29 @@ TEST(LlmAgentAsyncTest, DisablingTheLoggerCannotBreakADecision) {
       agent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 1u);
+}
+
+TEST(LlmAgentAsyncTest, DestroyingAnAgentWaitsForTheRunningRequest) {
+  auto provider = std::make_shared<GatedProvider>();
+  {
+    Agent agent(provider, DefaultConfig());
+    RegisterPressing(agent);
+    agent.UpdateContext(Update("rev-1"));
+    ASSERT_TRUE(agent.DecideAsync().ok());
+    ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
+
+    // Release the request from another thread after a delay. Destroying the
+    // agent must wait for the model call instead of abandoning it.
+    std::thread releaser([provider] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      provider->Release();
+    });
+    releaser.detach();
+  }
+
+  EXPECT_EQ(provider->calls.load(), 1);
+  EXPECT_EQ(provider->completed.load(), 1)
+      << "the destructor waited for the in-flight request";
 }
 
 }  // namespace

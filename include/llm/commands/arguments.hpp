@@ -72,6 +72,12 @@ class CommandArguments {
 /// Parses an argument object. On failure the result is !valid().
 CommandArguments ParseCommandArguments(std::string_view arguments_json);
 
+/// True when `text` is well-formed JSON.
+///
+/// Used at the result boundary so a game callback that returns malformed
+/// content cannot pollute the transcript the model sees next.
+bool IsValidJson(std::string_view text);
+
 /// Checks the declared constraints of one parameter against the arguments.
 ///
 /// This is the contract the model was given: presence/required, JSON type,

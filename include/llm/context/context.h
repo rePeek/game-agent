@@ -6,14 +6,15 @@
 /// to reassemble the whole transcript for every decision. The pieces have
 /// different lifetimes:
 ///
-/// | piece            | source                | strategy                        |
-/// | ---------------- | --------------------- | ------------------------------- |
-/// | system prompt    | application           | kept                            |
-/// | command defs     | application           | replaced on registration change |
-/// | current context  | application, per call | replaces the previous snapshot  |
-/// | recent history   | application, per call | replaces the previous window    |
-/// | decision context | application, per call | travels with the decision       |
-/// | decisions        | confirmed by the SDK  | kept within a budget, oldest first |
+/// | piece            | source                | strategy | | ---------------- |
+/// --------------------- | ------------------------------- | | system prompt |
+/// application           | kept                            | | command defs |
+/// application           | replaced on registration change | | current context
+/// | application, per call | replaces the previous snapshot  | | recent history
+/// | application, per call | replaces the previous window    | | decision
+/// context | application, per call | travels with the decision       | |
+/// decisions        | confirmed by the SDK  | kept within a budget, oldest
+/// first |
 ///
 /// Two rules matter for correctness:
 ///  * the current context is *state*, not history: it never accumulates;
@@ -59,8 +60,8 @@ struct DecisionRecord {
   std::string context_revision;
   /// Framing the application supplied when the decision was taken.
   std::string decision_context;
-  Message assistant;                      // command calls (+ any assistant text)
-  std::vector<Message> command_results;   // one per command call, in order
+  Message assistant;                     // command calls (+ any assistant text)
+  std::vector<Message> command_results;  // one per command call, in order
 
   std::size_t MessageCount() const {
     return (decision_context.empty() ? 0u : 1u) + 1 + command_results.size();
@@ -84,6 +85,21 @@ struct ContextConfig {
   /// Tokens reserved for the model's answer, subtracted from max_input_tokens
   /// before the transcript is trimmed.
   std::size_t reserved_output_tokens = 0;
+
+  /// True when the configuration can produce a well-formed request.
+  ///
+  /// `reserved_output_tokens` must leave room for at least one input token,
+  /// otherwise every request would be over budget and the mismatch would only
+  /// surface as ContextTooLarge.
+  bool IsValid(std::string* error = nullptr) const {
+    if (max_input_tokens > 0 && reserved_output_tokens >= max_input_tokens) {
+      if (error != nullptr) {
+        *error = "reserved_output_tokens must be smaller than max_input_tokens";
+      }
+      return false;
+    }
+    return true;
+  }
 };
 
 /// What the Context is allowed to spend on its own messages.
@@ -110,7 +126,8 @@ struct RenderedContext {
 
 /// Owns the message history of one decision stream (one coach, one side).
 ///
-/// Thread-compatible but not thread-safe: the Agent serializes access.
+/// Single-threaded by ownership: the Agent that owns this Context is the only
+/// thing that calls it, from the Agent's owner thread.
 class Context {
  public:
   explicit Context(ContextConfig config = {});

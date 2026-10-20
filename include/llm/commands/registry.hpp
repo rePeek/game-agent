@@ -195,10 +195,10 @@ RegisteredCommand MakeRegisteredCommand(std::string name,
 
 /// An ordered set of registered commands, addressed by name.
 ///
-/// The registry is deliberately not thread-safe: the Agent owns it and guards
-/// it with the same lock as the rest of its state. `version()` changes whenever
-/// the set changes, so a pending decision can detect that the commands it was
-/// taken with are no longer the current ones.
+/// The registry is deliberately not thread-safe: the Agent owns it and only
+/// touches it from its owner thread. `version()` changes whenever the set
+/// changes, so a pending decision can detect that the commands it was taken
+/// with are no longer the current ones.
 class CommandRegistry {
  public:
   /// Adds a command. The command is rejected when its name is empty, already

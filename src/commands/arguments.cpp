@@ -48,6 +48,10 @@ CommandArguments ParseCommandArguments(std::string_view arguments_json) {
   return args;
 }
 
+bool IsValidJson(std::string_view text) {
+  return !nlohmann::json::parse(text, nullptr, false).is_discarded();
+}
+
 namespace {
 
 /// Looks a property up. Returns nullptr when it is absent or null, which the

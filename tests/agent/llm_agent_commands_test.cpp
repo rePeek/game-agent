@@ -82,6 +82,12 @@ ContextUpdate Update(const std::string& revision) {
   return update;
 }
 
+void RegisterPressing(Agent& agent) {
+  (void)agent.RegisterCommand("set_pressing_intensity", "Pressing",
+                              Params(Param<int>("level").Required()),
+                              [](int) { return CommandOutcome{true, {}, {}}; });
+}
+
 TEST(LlmAgentCommandsTest, NotConfiguredIsDistinctFromClosed) {
   Agent agent(Config());
 
@@ -91,6 +97,7 @@ TEST(LlmAgentCommandsTest, NotConfiguredIsDistinctFromClosed) {
   EXPECT_FALSE(agent.IsClosed());
 
   ASSERT_TRUE(agent.SetProvider(std::make_shared<StubProvider>()).ok());
+  RegisterPressing(agent);
   agent.UpdateContext(Update("rev-1"));
   EXPECT_TRUE(test::DecideOrThrow(agent).completion.IsSuccess());
 }
@@ -133,7 +140,7 @@ TEST(LlmAgentCommandsTest, RegistersTypedCommandsAndRejectsDuplicates) {
 TEST(LlmAgentCommandsTest, CommandSetIsFrozenWhileADecisionIsOutstanding) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, Config());
-  ASSERT_TRUE(agent.RegisterCommand("keep", "", Params(), []() {}).ok());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-1"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -142,7 +149,7 @@ TEST(LlmAgentCommandsTest, CommandSetIsFrozenWhileADecisionIsOutstanding) {
   // In flight: registering, removing and clearing are all refused.
   EXPECT_EQ(agent.RegisterCommand("late", "", Params(), []() {}).status,
             RegistrationStatus::AgentBusy);
-  EXPECT_EQ(agent.UnregisterCommand("keep").status,
+  EXPECT_EQ(agent.UnregisterCommand("set_pressing_intensity").status,
             RegistrationStatus::AgentBusy);
   EXPECT_EQ(agent.ClearCommands().status, RegistrationStatus::AgentBusy);
 
@@ -175,6 +182,7 @@ TEST(LlmAgentCommandsTest, ClosedAgentsRefuseConfigurationAndRegistration) {
 TEST(LlmAgentCommandsTest, ProviderCannotChangeWhileADecisionIsOutstanding) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, Config());
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-1"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -193,6 +201,50 @@ TEST(LlmAgentCommandsTest, ProviderCannotChangeWhileADecisionIsOutstanding) {
   EXPECT_EQ(agent.PendingDecisionCount(), 1u);
   EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
   EXPECT_TRUE(agent.SetProvider(std::make_shared<StubProvider>()).ok());
+}
+
+TEST(LlmAgentCommandsTest, EmptyRegistryRefusesADecision) {
+  Agent agent(std::make_shared<StubProvider>(), Config());
+  agent.UpdateContext(Update("rev-1"));
+
+  // The SDK forces a command call, so there is no valid request to send.
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::NoCommands);
+  EXPECT_TRUE(
+      agent
+          .RegisterCommand("set_pressing_intensity", "",
+                           Params(Param<int>("level").Required()),
+                           [](int) { return CommandOutcome{true, {}, {}}; })
+          .ok());
+  EXPECT_TRUE(test::DecideOrThrow(agent).completion.IsSuccess());
+}
+
+TEST(LlmAgentCommandsTest, InvalidContextBudgetConfigurationIsRefused) {
+  AgentConfig config = Config();
+  config.context.max_input_tokens = 100;
+  config.context.reserved_output_tokens = 100;  // no room left for input
+  Agent agent(std::make_shared<StubProvider>(), config);
+  RegisterPressing(agent);
+  agent.UpdateContext(Update("rev-1"));
+
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::InvalidConfig);
+}
+
+TEST(LlmAgentCommandsTest, MalformedResultJsonIsRejected) {
+  Agent agent(std::make_shared<StubProvider>(), Config());
+  RegisterPressing(agent);
+  agent.UpdateContext(Update("rev-1"));
+  const DecisionResult decision = test::DecideOrThrow(agent);
+  ASSERT_TRUE(decision.completion.IsSuccess());
+
+  CommandResult bad;
+  bad.command_call_id = "call_a";
+  bad.name = "set_pressing_intensity";
+  bad.outcome.success = true;
+  bad.outcome.content_json = "not json";
+  EXPECT_EQ(agent.RecordCommandResults(decision.decision_id, {bad}),
+            RecordOutcome::InvalidResultJson);
+  EXPECT_EQ(agent.PendingDecisionCount(), 1u) << "nothing was recorded";
+  EXPECT_TRUE(agent.DiscardDecision(decision.decision_id));
 }
 
 }  // namespace

@@ -82,6 +82,10 @@ struct Agent::Impl {
   std::optional<std::int32_t> max_output_tokens;
   std::optional<std::size_t> max_command_calls;
   std::shared_ptr<ILogger> logger;
+  /// The SDK's own batch validator, applied to every provider result so a
+  /// provider that reports Success without validating cannot smuggle an
+  /// invalid batch into the pending decision.
+  std::shared_ptr<const CommandValidator> validator = DefaultValidator();
 
   Context context;
   bool closed = false;
@@ -117,6 +121,9 @@ struct Agent::Impl {
     std::string context_revision;
     std::string decision_context;
     std::uint64_t request_id = 0;
+    /// The request snapshot, kept so the result can be validated against the
+    /// exact definitions the model was offered.
+    std::shared_ptr<const ModelRequest> request;
     std::future<CompletionResult> future;
   };
   std::optional<InFlight> in_flight;
@@ -125,8 +132,8 @@ struct Agent::Impl {
 
   /// The request this agent would send for the current context: the rendered
   /// history plus this agent's system prompt, commands and model parameters.
-  ModelRequest BuildRequestLocked(std::uint64_t request_id,
-                                  bool* exceeds_budget) const {
+  ModelRequest BuildRequest(std::uint64_t request_id,
+                            bool* exceeds_budget) const {
     ModelRequest request;
     request.model = model;
 
@@ -183,21 +190,39 @@ struct Agent::Impl {
       result = Refused(DecisionStatus::Closed, flight.context_revision,
                        "agent was closed while the decision was in flight");
     } else if (result.completion.IsSuccess()) {
-      Pending staged;
-      staged.decision_id = next_decision_id++;
-      staged.request_id = flight.request_id;
-      staged.context_revision = flight.context_revision;
-      staged.registry_version = registry.version();
-      staged.decision_context = flight.decision_context;
-      staged.assistant = result.completion.ToAssistantMessage();
-      staged.calls.reserve(result.completion.command_calls.size());
-      for (const CommandCall& call : result.completion.command_calls) {
-        Pending::Call entry;
-        entry.call = call;
-        staged.calls.push_back(std::move(entry));
+      // The SDK validates every provider's output here, not only the OpenAI
+      // one: batch size, known commands, unique ids, an argument object and
+      // the command's schema. A provider that reported Success without
+      // checking cannot reach a callback.
+      const ValidationReport report =
+          validator->Validate(*flight.request, result.completion.command_calls);
+      if (!report.ok) {
+        const bool schema_issue = report.HasSchemaIssues();
+        result.completion.status = schema_issue
+                                       ? CompletionStatus::Unsupported
+                                       : CompletionStatus::InvalidCommandCalls;
+        ModelError error;
+        error.kind =
+            schema_issue ? ErrorKind::Unsupported : ErrorKind::InvalidRequest;
+        error.message = report.Summary();
+        result.completion.error = std::move(error);
+      } else {
+        Pending staged;
+        staged.decision_id = next_decision_id++;
+        staged.request_id = flight.request_id;
+        staged.context_revision = flight.context_revision;
+        staged.registry_version = registry.version();
+        staged.decision_context = flight.decision_context;
+        staged.assistant = result.completion.ToAssistantMessage();
+        staged.calls.reserve(result.completion.command_calls.size());
+        for (const CommandCall& call : result.completion.command_calls) {
+          Pending::Call entry;
+          entry.call = call;
+          staged.calls.push_back(std::move(entry));
+        }
+        result.decision_id = staged.decision_id;
+        pending = std::move(staged);
       }
-      result.decision_id = staged.decision_id;
-      pending = std::move(staged);
     }
 
     EmitLog(
@@ -377,6 +402,14 @@ StartOutcome Agent::DecideAsync() {
                   !impl.provider ? "agent has no provider configured"
                                  : "agent has no model configured");
   }
+  if (std::string config_error; !impl.context.config().IsValid(&config_error)) {
+    return reject(StartStatus::InvalidConfig, std::move(config_error));
+  }
+  if (impl.registry.size() == 0) {
+    return reject(StartStatus::NoCommands,
+                  "no commands are registered; register at least one before "
+                  "asking for a decision");
+  }
   if (impl.in_flight.has_value() || impl.pending.has_value()) {
     return reject(StartStatus::Busy,
                   impl.in_flight.has_value()
@@ -387,17 +420,30 @@ StartOutcome Agent::DecideAsync() {
 
   const std::uint64_t request_id = impl.next_request_id++;
   bool exceeds_budget = false;
-  ModelRequest request = impl.BuildRequestLocked(request_id, &exceeds_budget);
+  auto request = std::make_shared<const ModelRequest>(
+      impl.BuildRequest(request_id, &exceeds_budget));
   if (exceeds_budget) {
     return reject(StartStatus::ContextTooLarge,
                   "the rendered context, system prompt and command schemas "
                   "exceed the configured input token budget");
   }
+  // A schema the SDK validator cannot enforce must not be sent: the provider
+  // would either reject it or be credited with a guarantee it never made.
+  if (impl.validator != nullptr) {
+    const ValidationReport schemas =
+        impl.validator->ValidateCommandSchemas(*request);
+    if (!schemas.ok) {
+      return reject(StartStatus::Failed,
+                    "the request uses a command schema that cannot be "
+                    "enforced: " +
+                        schemas.Summary());
+    }
+  }
 
   const std::string revision = impl.context.context_revision();
   const std::string decision_context = impl.context.decision_context();
-  const std::size_t command_count = request.commands.size();
-  const std::size_t message_count = request.messages.size();
+  const std::size_t command_count = request->commands.size();
+  const std::size_t message_count = request->messages.size();
   std::shared_ptr<IModelProvider> provider = impl.provider;
 
   try {
@@ -405,12 +451,12 @@ StartOutcome Agent::DecideAsync() {
     flight.context_revision = revision;
     flight.decision_context = decision_context;
     flight.request_id = request_id;
+    flight.request = request;
     // The model thread only sees the provider and the request: it cannot touch
     // any Agent state.
-    flight.future = std::async(
-        std::launch::async, [provider, request = std::move(request)]() mutable {
-          return CallProvider(provider, request);
-        });
+    flight.future = std::async(std::launch::async, [provider, request]() {
+      return CallProvider(provider, *request);
+    });
     impl.in_flight = std::move(flight);
   } catch (const std::exception& error) {
     return reject(
@@ -533,6 +579,15 @@ RecordOutcome Agent::RecordCommandResults(std::uint64_t decision_id,
   if (results.size() != pending.calls.size()) {
     reject("results do not cover every command call exactly once");
     return RecordOutcome::IncompleteResults;
+  }
+  // A malformed result would be embedded verbatim into the transcript and
+  // poison every later request, so it is refused at the boundary.
+  for (const CommandResult& candidate : results) {
+    if (!candidate.outcome.content_json.empty() &&
+        !IsValidJson(candidate.outcome.content_json)) {
+      reject("a command result contains content that is not valid JSON");
+      return RecordOutcome::InvalidResultJson;
+    }
   }
   std::vector<Message> result_messages;
   result_messages.reserve(pending.calls.size());

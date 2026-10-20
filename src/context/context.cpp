@@ -45,8 +45,13 @@ void Context::SetContextUpdate(ContextUpdate update) {
 
 void Context::AppendDecision(DecisionRecord record) {
   decisions_.push_back(std::move(record));
-  if (config_.max_memory_decisions > 0) {
-    while (decisions_.size() > config_.max_memory_decisions) {
+  // Memory retention is always bounded: when no explicit cap is set, the
+  // render budget is the cap, so a long-running agent cannot grow forever.
+  const std::size_t cap = config_.max_memory_decisions > 0
+                              ? config_.max_memory_decisions
+                              : config_.max_decisions;
+  if (cap > 0) {
+    while (decisions_.size() > cap) {
       decisions_.erase(decisions_.begin());
     }
   }

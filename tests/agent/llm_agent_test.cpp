@@ -29,6 +29,13 @@ void RegisterPressing(Agent& agent) {
       });
 }
 
+void RegisterLine(Agent& agent) {
+  (void)agent.RegisterCommand(
+      "set_defensive_line", "Defensive line",
+      Params(Param<std::string>("height").Required()),
+      [](const std::string&) { return CommandOutcome{true, {}, {}}; });
+}
+
 CompletionResult SuccessfulBatch() {
   CompletionResult result;
   result.status = CompletionStatus::Success;
@@ -143,6 +150,7 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
   RegisterPressing(agent);
+  RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -186,6 +194,7 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
   RegisterPressing(agent);
+  RegisterPressing(agent);
 
   const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
@@ -218,6 +227,7 @@ TEST(LlmAgentTest, RecordingMovesTheHistoryForward) {
 TEST(LlmAgentTest, OneDecisionAtATime) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
@@ -238,6 +248,7 @@ TEST(LlmAgentTest, OneDecisionAtATime) {
 TEST(LlmAgentTest, IncompleteResultsRecordNothing) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
@@ -260,6 +271,7 @@ TEST(LlmAgentTest, FailedDecisionsAreNotStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next.status = CompletionStatus::NoCommandCalls;
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
 
@@ -278,6 +290,8 @@ TEST(LlmAgentTest, AgentsShareAProviderButNotAContext) {
   AgentConfig away_config = DefaultConfig();
   away_config.id = "away";
   Agent away(provider, std::move(away_config));
+  RegisterPressing(home);
+  RegisterPressing(away);
 
   const DecisionResult home_decision = Decide(home, Update("rev-h"));
   ASSERT_TRUE(home_decision.completion.IsSuccess());
@@ -304,6 +318,7 @@ TEST(LlmAgentTest, AgentsShareAProviderButNotAContext) {
 TEST(LlmAgentTest, ConfigurationIsMutable) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   agent.SetSystemPrompt("You are the assistant coach.");
   agent.SetModel("another-model");
@@ -311,18 +326,27 @@ TEST(LlmAgentTest, ConfigurationIsMutable) {
   EXPECT_EQ(agent.model(), "another-model");
   EXPECT_TRUE(agent.Commands().empty());
 
+  // The SDK forces a command call, so an empty registry cannot produce a
+  // well-formed request.
+  agent.UpdateContext(Update("rev-5"));
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::NoCommands);
+  EXPECT_TRUE(provider->requests.empty());
+
+  RegisterPressing(agent);
   const DecisionResult decision = Decide(agent, Update("rev-5"));
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   const ModelRequest& request = provider->requests[0];
   EXPECT_EQ(request.model, "another-model");
-  EXPECT_TRUE(request.commands.empty());
+  ASSERT_EQ(request.commands.size(), 1u);
+  EXPECT_EQ(request.commands[0].name, "set_pressing_intensity");
   EXPECT_EQ(request.messages[0].content, "You are the assistant coach.");
 }
 
 TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   const DecisionResult first = Decide(agent, Update("rev-62"));
 
   agent.Close();
@@ -340,6 +364,7 @@ TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
 TEST(LlmAgentTest, WaitForIdleReportsWhenTheModelCallIsDone) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   EXPECT_TRUE(agent.WaitForIdle(std::chrono::milliseconds(0)));
   ASSERT_TRUE(agent.DecideAsync().ok());
@@ -352,6 +377,7 @@ TEST(LlmAgentTest, WaitForIdleReportsWhenTheModelCallIsDone) {
 TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62", "Minute 62."));
@@ -389,6 +415,7 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
 TEST(LlmAgentTest, ARefusedDecisionStillUsesTheLatestUpdate) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
 
   const DecisionResult first = Decide(agent, Update("rev-62", "Minute 62."));
   ASSERT_TRUE(first.completion.IsSuccess());
@@ -411,6 +438,8 @@ TEST(LlmAgentTest, ResultsAreStoredInCallOrderWhateverOrderTheyArrive) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = TwoCallBatch();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
+  RegisterLine(agent);
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
@@ -440,12 +469,7 @@ TEST(LlmAgentTest, ResultsThatNameTheWrongCommandAreRejected) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = TwoCallBatch();
   Agent agent(provider, DefaultConfig());
-  ASSERT_TRUE(
-      agent
-          .RegisterCommand("set_pressing_intensity", "",
-                           Params(Param<int>("level").Required()),
-                           [](int) { return CommandOutcome{true, {}, {}}; })
-          .ok());
+  RegisterPressing(agent);
   ASSERT_TRUE(
       agent
           .RegisterCommand(
@@ -470,12 +494,7 @@ TEST(LlmAgentTest, FailedResultsAreRecordedAsExecutedFacts) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   Agent agent(provider, DefaultConfig());
-  ASSERT_TRUE(
-      agent
-          .RegisterCommand("set_pressing_intensity", "",
-                           Params(Param<int>("level").Required()),
-                           [](int) { return CommandOutcome{true, {}, {}}; })
-          .ok());
+  RegisterPressing(agent);
 
   const DecisionResult decision = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(decision.completion.IsSuccess());
@@ -517,6 +536,7 @@ TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
   Agent agent(provider, DefaultConfig());
+  RegisterPressing(agent);
   RegisterPressing(agent);
 
   ContextUpdate update = Update("rev-62");

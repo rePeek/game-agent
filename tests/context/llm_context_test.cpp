@@ -367,5 +367,20 @@ TEST(LlmContextTest, AnOversizedDecisionIsDroppedRatherThanRefusing) {
   EXPECT_NE(rendered.messages[0].content.find("now"), std::string::npos);
 }
 
+TEST(LlmContextTest, ZeroMemoryCapFallsBackToTheRenderBudget) {
+  ContextConfig config;
+  config.max_memory_decisions = 0;  // no explicit cap
+  config.max_decisions = 3;
+  Context context(config);
+
+  for (std::uint64_t id = 1; id <= 6; ++id) {
+    context.AppendDecision(MakeDecision(DecisionSpec{id}));
+  }
+
+  // Retention is still bounded: it falls back to the render budget, never
+  // grows without limit.
+  EXPECT_EQ(context.decision_count(), 3u);
+}
+
 }  // namespace
 }  // namespace llm

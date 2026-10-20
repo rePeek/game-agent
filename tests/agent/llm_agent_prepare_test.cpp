@@ -152,40 +152,76 @@ TEST(LlmAgentPrepareTest, InvokingIsOneShot) {
 
 TEST(LlmAgentPrepareTest, ABatchWithOneUnbindableCallPreparesNone) {
   auto provider = std::make_shared<ScriptedProvider>();
-  // set_formation is not registered.
-  provider->next = Batch(
-      {CommandCall{"call_a", "set_pressing", R"({"level":4})"},
-       CommandCall{"call_b", "set_formation", R"({"formation":"4-4-2"})"}});
+  // Both calls pass the schema (plain integers), but 1000 does not fit the
+  // callback's int8 parameter, so binding must fail as a whole.
+  provider->next =
+      Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
+             CommandCall{"call_b", "set_pressing", R"({"level":1000})"}});
   Agent agent(provider, Config());
   Counters counters;
-  RegisterPressing(agent, counters);
+  ASSERT_TRUE(agent
+                  .RegisterCommand(
+                      "set_pressing", "Pressing",
+                      Params(Param<std::int8_t>("level").Required()),
+                      [&counters](std::int8_t level) -> CommandOutcome {
+                        ++counters.pressing;
+                        return CommandOutcome{true, std::to_string(level), {}};
+                      })
+                  .ok());
 
   const DecisionResult decision = Decide(agent, "rev-1");
+  ASSERT_TRUE(decision.completion.IsSuccess());
   const PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
 
   EXPECT_FALSE(prepared.ok());
   EXPECT_EQ(prepared.status, PrepareStatus::InvalidArguments);
   EXPECT_TRUE(prepared.commands.empty()) << "all or nothing";
   EXPECT_EQ(counters.pressing, 0) << "nothing may run when the batch fails";
-  EXPECT_NE(prepared.error.find("set_formation"), std::string::npos);
+  EXPECT_NE(prepared.error.find("out of range"), std::string::npos);
 }
 
-TEST(LlmAgentPrepareTest, InvalidArgumentsFailTheWholeBatch) {
+TEST(LlmAgentPrepareTest, AProviderBatchThatBreaksTheSchemaIsNotStaged) {
   auto provider = std::make_shared<ScriptedProvider>();
+  // A provider that reports Success without validating must not slip through:
+  // "high" is not an integer, so the SDK refuses the batch at the boundary.
   provider->next =
-      Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
-             CommandCall{"call_b", "set_pressing", R"({"level":"high"})"}});
+      Batch({CommandCall{"call_a", "set_pressing", R"({"level":"high"})"}});
   Agent agent(provider, Config());
   Counters counters;
   RegisterPressing(agent, counters);
 
   const DecisionResult decision = Decide(agent, "rev-1");
-  const PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
 
-  EXPECT_EQ(prepared.status, PrepareStatus::InvalidArguments);
-  EXPECT_TRUE(prepared.commands.empty());
-  EXPECT_NE(prepared.error.find("must be an integer"), std::string::npos);
+  EXPECT_EQ(decision.completion.status, CompletionStatus::InvalidCommandCalls);
+  EXPECT_EQ(decision.decision_id, 0u);
+  EXPECT_EQ(agent.PendingDecisionCount(), 0u);
+  EXPECT_FALSE(agent.IsBusy());
   EXPECT_EQ(counters.pressing, 0);
+
+  // Unexpected properties and duplicate ids are batch-level violations too.
+  {
+    auto extra = std::make_shared<ScriptedProvider>();
+    extra->next = Batch(
+        {CommandCall{"call_a", "set_pressing", R"({"level":4,"extra":true})"}});
+    Agent other(extra, Config());
+    Counters other_counters;
+    RegisterPressing(other, other_counters);
+    EXPECT_EQ(Decide(other, "rev-1").completion.status,
+              CompletionStatus::InvalidCommandCalls);
+    EXPECT_EQ(other.PendingDecisionCount(), 0u);
+  }
+  {
+    auto duplicate = std::make_shared<ScriptedProvider>();
+    duplicate->next =
+        Batch({CommandCall{"call_a", "set_pressing", R"({"level":4})"},
+               CommandCall{"call_a", "set_pressing", R"({"level":5})"}});
+    Agent other(duplicate, Config());
+    Counters other_counters;
+    RegisterPressing(other, other_counters);
+    EXPECT_EQ(Decide(other, "rev-1").completion.status,
+              CompletionStatus::InvalidCommandCalls);
+    EXPECT_EQ(other.PendingDecisionCount(), 0u);
+  }
 }
 
 TEST(LlmAgentPrepareTest, DiscardingOrClosingInvalidatesPreparedCommands) {
