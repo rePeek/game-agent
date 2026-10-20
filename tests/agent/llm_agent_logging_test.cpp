@@ -1,6 +1,7 @@
 // Tests for the agent's log events: correlation, rejections, re-entrancy and
 // the promise that logging can never change a decision.
 
+#include "agent_driver.h"
 #include "capture_logger.h"
 
 #include <cstdint>
@@ -44,27 +45,6 @@ class ScriptedProvider : public IModelProvider {
   CompletionResult Complete(const ModelRequest&) override { return next; }
 };
 
-/// Logs by asking the agent about itself: only safe because the SDK never
-/// calls the logger while holding an agent lock.
-class ReentrantLogger final : public ILogger {
- public:
-  explicit ReentrantLogger(std::shared_ptr<Agent>* agent) : agent_(agent) {}
-  int calls = 0;
-
-  void Log(const LogRecord&) override {
-    ++calls;
-    if (*agent_) {
-      (*agent_)->PendingDecisionCount();
-      (*agent_)->InFlightDecisionCount();
-      (*agent_)->current_revision();
-      (*agent_)->IsBusy();
-    }
-  }
-
- private:
-  std::shared_ptr<Agent>* agent_;
-};
-
 class ThrowingLogger final : public ILogger {
  public:
   void Log(const LogRecord&) override { throw std::runtime_error("sink down"); }
@@ -106,7 +86,7 @@ struct Fixture {
   /// One decision round: update the context, then ask.
   DecisionResult Decide(const std::string& revision) {
     agent->UpdateContext(Update(revision));
-    return agent->DecideAsync().get();
+    return test::DecideOrThrow(*agent);
   }
 };
 
@@ -153,8 +133,8 @@ TEST(LlmAgentLoggingTest, RejectionsAndDiscardsExplainThemselves) {
 
   // Still awaiting results: the next decision is refused, and the record says
   // why (this is the "why was it Busy?" answer).
-  const DecisionResult busy = fixture.Decide("rev-63");
-  EXPECT_EQ(busy.status, DecisionStatus::Busy);
+  fixture.agent->UpdateContext(Update("rev-63"));
+  EXPECT_EQ(fixture.agent->DecideAsync().status, StartStatus::Busy);
   const bool found_rejection =
       fixture.logger->Has(log_event::kDecisionRejected);
   ASSERT_TRUE(found_rejection);
@@ -226,8 +206,8 @@ TEST(LlmAgentLoggingTest, ClosedAgentsAreVisibleAndStillRefuse) {
 
   EXPECT_TRUE(fixture.logger->Has(log_event::kSessionClosed));
 
-  const DecisionResult refused = fixture.Decide("rev-63");
-  EXPECT_EQ(refused.status, DecisionStatus::Closed);
+  fixture.agent->UpdateContext(Update("rev-63"));
+  EXPECT_EQ(fixture.agent->DecideAsync().status, StartStatus::Closed);
   const std::vector<std::string> rejections =
       fixture.logger->Messages(log_event::kDecisionRejected);
   ASSERT_EQ(rejections.size(), 1u);
@@ -290,7 +270,7 @@ TEST(LlmAgentLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
   RegisterPressing(silent);
 
   silent.UpdateContext(Update("rev-62"));
-  const DecisionResult decision = silent.DecideAsync().get();
+  const DecisionResult decision = test::DecideOrThrow(silent);
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(
       silent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
@@ -298,10 +278,20 @@ TEST(LlmAgentLoggingTest, NoLoggerIsTheDefaultAndChangesNothing) {
   EXPECT_TRUE(fixture.logger->Records().empty());
 }
 
-TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
-  std::shared_ptr<Agent> agent;
-  auto logger = std::make_shared<ReentrantLogger>(&agent);
+// A logger must not call back into an Agent: provider events are emitted from
+// the model thread, so only the SDK's thread-safe sink contract is supported.
+TEST(LlmAgentLoggingTest, ALoggerThatOnlyCapturesNeverChangesTheDecision) {
+  std::vector<LogRecord> captured;
+  class CapturingLogger final : public ILogger {
+   public:
+    explicit CapturingLogger(std::vector<LogRecord>* sink) : sink_(sink) {}
+    void Log(const LogRecord& record) override { sink_->push_back(record); }
 
+   private:
+    std::vector<LogRecord>* sink_;
+  };
+
+  auto logger = std::make_shared<CapturingLogger>(&captured);
   AgentConfig config;
   config.id = "home";
   config.model = "gpt-5.6";
@@ -309,19 +299,17 @@ TEST(LlmAgentLoggingTest, LoggerMayCallBackIntoTheAgent) {
 
   auto provider = std::make_shared<ScriptedProvider>();
   provider->next = SuccessfulBatch();
-  agent = std::make_shared<Agent>(provider, std::move(config));
-  RegisterPressing(*agent);
+  Agent agent(provider, std::move(config));
+  RegisterPressing(agent);
 
-  agent->UpdateContext(Update("rev-62"));
-  const DecisionResult decision = agent->DecideAsync().get();
+  agent.UpdateContext(Update("rev-62"));
+  const DecisionResult decision = test::DecideOrThrow(agent);
 
-  EXPECT_TRUE(decision.completion.IsSuccess())
-      << "a logger that queries the agent must not deadlock it";
-  EXPECT_GT(logger->calls, 0);
+  EXPECT_TRUE(decision.completion.IsSuccess());
+  EXPECT_FALSE(captured.empty());
   EXPECT_EQ(
-      agent->RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
+      agent.RecordCommandResults(decision.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
-  agent.reset();  // the reentrant logger must not outlive the agent
 }
 
 TEST(LlmAgentLoggingTest, AThrowingLoggerDoesNotChangeTheDecision) {

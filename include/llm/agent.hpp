@@ -4,10 +4,27 @@
 /// commands and the history of its decisions.
 ///
 /// The game creates an agent, registers the commands the model may call,
-/// updates it when the world changes, asks for a decision asynchronously, binds
-/// the returned calls to C++ callbacks, runs them itself and reports the
-/// results back. The SDK never runs a command, never advances the conversation
-/// on its own and never decides when to ask again.
+/// updates it when the world changes, starts a decision asynchronously, polls
+/// for the result at a safe point in its own tick, binds the returned calls to
+/// C++ callbacks, runs them and reports the results back. The SDK never runs a
+/// command, never advances the conversation on its own and never decides when
+/// to ask again.
+///
+/// @par Thread ownership
+///
+/// Every public method must be called from the thread that created the agent —
+/// its **owner thread**. The SDK keeps no cross-thread state for the Agent: the
+/// model request runs on its own thread, but that thread only calls the
+/// provider and hands back a CompletionResult through a future. All Agent state
+/// (provider, registry, context, pending decision, history) is read and written
+/// only by the owner thread.
+///
+/// Two consequences the caller must respect:
+///  * `PollDecision()` is how a finished request is collected; it never blocks,
+///    and it is the only place a pending decision is created.
+///  * a provider's logger may be invoked from the model thread. A logger must
+///    therefore not call back into an Agent; capture what you need into a
+///    thread-safe sink instead.
 ///
 /// Invariants, both about the transcript the model sees:
 ///  * at most one decision may be in flight or awaiting results at a time, so a
@@ -38,23 +55,39 @@
 
 namespace llm {
 
-/// Agent-level outcome of a decision attempt. `completion` is only meaningful
+/// Agent-level outcome of a completed decision. `completion` is only meaningful
 /// when this is Completed.
 enum class DecisionStatus {
-  Completed,        // the provider answered; branch on completion.status
-  NotConfigured,    // no provider or no model has been set yet
-  Busy,             // a previous decision is still in flight or awaiting
-  ContextTooLarge,  // the request would exceed the input token budget
-  Closed,           // the agent was closed
+  Completed,  // the provider answered; branch on completion.status
+  Closed,     // the agent was closed while the request was in flight
 };
 
 struct DecisionResult {
-  /// 0 when no decision was started (NotConfigured/Busy/Closed).
+  /// 0 when no decision was staged (a provider-level failure).
   std::uint64_t decision_id = 0;
   /// Revision of the context this decision was taken from.
   std::string context_revision;
-  DecisionStatus status = DecisionStatus::Closed;
+  DecisionStatus status = DecisionStatus::Completed;
   CompletionResult completion;
+};
+
+/// Why a decision could not be started.
+enum class StartStatus {
+  Started,
+  NotConfigured,    // no provider or no model has been set yet
+  Busy,             // a request is in flight or a decision awaits results
+  ContextTooLarge,  // the request would exceed the input token budget
+  Closed,           // the agent was closed
+  Failed,           // the model call could not be launched
+};
+
+struct StartOutcome {
+  StartStatus status = StartStatus::Started;
+  /// Revision the request was built from (empty when nothing was started).
+  std::string context_revision;
+  std::string error;
+
+  bool ok() const { return status == StartStatus::Started; }
 };
 
 /// What happened to an attempt to record command results.
@@ -105,8 +138,8 @@ struct AgentConfig {
 /// One coach, one side, one history. Independent agents share nothing, not even
 /// when they share a provider.
 ///
-/// Thread-safe: the state is guarded, and the provider call runs on the agent's
-/// own worker thread, so a completion never blocks the caller.
+/// The Agent is single-threaded by ownership: see @ref AgentConfig and the
+/// class comment above for the contract.
 class Agent final {
  public:
   explicit Agent(AgentConfig config = {});
@@ -119,7 +152,7 @@ class Agent final {
   Agent& operator=(const Agent&) = delete;
 
   // --- configuration ------------------------------------------------------
-  /// Installs the provider. Refused while a decision is in flight, so a call
+  /// Installs the provider. Refused while a decision is outstanding, so a call
   /// that is already running is never re-pointed at a different backend.
   ConfigOutcome SetProvider(std::shared_ptr<IModelProvider> provider);
   ConfigOutcome SetModel(std::string model);
@@ -143,8 +176,7 @@ class Agent final {
         std::forward<Fn>(callback)));
   }
 
-  /// Removes a registered command. Refused while a decision is in flight or
-  /// awaiting results.
+  /// Removes a registered command. Refused while a decision is outstanding.
   CommandRegistrationResult UnregisterCommand(std::string_view name);
 
   /// Removes every registered command.
@@ -154,11 +186,9 @@ class Agent final {
   std::vector<CommandDefinition> Commands() const;
 
   // --- context ------------------------------------------------------------
-  /// Records the latest world state and recent-history window.
-  ///
-  /// It may be called at any time, including while a decision is in flight: the
-  /// update then applies to the *next* decision, never to the request that was
-  /// already sent (the request is snapshotted when DecideAsync() is called).
+  /// Records the latest world state, recent-history window and decision
+  /// framing. The request is snapshotted when DecideAsync() is called, so an
+  /// update never changes a request that has already been sent.
   void UpdateContext(ContextUpdate update);
 
   /// Revision of the newest context update this agent received.
@@ -168,12 +198,21 @@ class Agent final {
 
   // --- decisions ----------------------------------------------------------
   /// Starts one decision from the context recorded so far: renders it, asks the
-  /// provider exactly once on the agent's worker, and keeps the result pending
-  /// until it is confirmed or discarded.
+  /// provider exactly once on a model thread, and returns immediately.
   ///
-  /// Never runs a command callback. Returns NotConfigured/Busy/Closed as a
-  /// DecisionStatus; the returned future is always satisfied.
-  std::future<DecisionResult> DecideAsync();
+  /// It never runs a command callback and never blocks on the model. The
+  /// result is collected with PollDecision(). Returns NotConfigured/Busy/
+  /// ContextTooLarge/Closed without starting anything.
+  StartOutcome DecideAsync();
+
+  /// Collects a finished decision, or returns std::nullopt when the model has
+  /// not answered yet. Non-blocking.
+  ///
+  /// On success the decision is staged as pending (a decision id is assigned)
+  /// and must then be prepared, executed and recorded or discarded. On a
+  /// provider-level failure the result carries the error and nothing is
+  /// staged.
+  std::optional<DecisionResult> PollDecision();
 
   /// Binds a pending decision's command calls to their callbacks, without
   /// running anything. The whole batch is prepared or nothing is: a single
@@ -194,24 +233,19 @@ class Agent final {
   bool DiscardDecision(std::uint64_t decision_id);
 
   // --- state --------------------------------------------------------------
-  /// True while any decision is in flight or awaiting results.
+  /// True while a request is in flight or a decision is awaiting results.
   bool IsBusy() const;
   bool IsClosed() const;
   std::size_t InFlightDecisionCount() const;
   std::size_t PendingDecisionCount() const;
-  /// Waits until no provider call is in flight. This is deliberately *not*
-  /// the same as the decision future being ready: a decision that has answered
-  /// is idle but still awaiting results, and a queued task may not have started
-  /// yet. Use the returned future for the result and this for quiescence.
+  /// Waits until the model call has finished (or none is in flight), up to the
+  /// timeout. It does not collect the result: call PollDecision() afterwards.
   bool WaitForIdle(std::chrono::milliseconds timeout) const;
 
-  /// Refuses further decisions: a submitted-but-unfinished decision is answered
-  /// as Closed when it returns, and nothing is staged. Already-prepared
-  /// commands are invalidated, so they cannot be executed after the close.
-  ///
-  /// Closing does not abort an HTTP request that is already running; the
-  /// destructor joins the worker, so destroying an agent can wait for the
-  /// provider's timeout.
+  /// Refuses further decisions and invalidates already-prepared commands. A
+  /// request that is already running is not aborted; it is still collected by
+  /// PollDecision() (answered as Closed) or waited out when the agent is
+  /// destroyed.
   void Close();
 
  private:

@@ -1,13 +1,14 @@
-// Asynchronous Agent tests: submission, in-flight behaviour, closing,
-// exception safety and worker lifetimes. Written against the gated provider so
+// Asynchronous Agent tests: starting, in-flight behaviour, closing, exception
+// safety and owner-thread polling. Written against the gated provider so
 // nothing depends on timing.
 
+#include "agent_driver.h"
 #include "capture_logger.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -50,7 +51,7 @@ CompletionResult SuccessfulBatch() {
 class GatedProvider : public IModelProvider {
  public:
   CompletionResult next = SuccessfulBatch();
-  int calls = 0;
+  std::atomic<int> calls{0};
 
   std::string Name() const override { return "gated"; }
   CompletionResult Complete(const ModelRequest&) override {
@@ -74,7 +75,7 @@ class GatedProvider : public IModelProvider {
   }
 
  private:
-  mutable std::mutex mutex_;
+  std::mutex mutex_;
   std::condition_variable entered_cv_;
   std::condition_variable release_cv_;
   bool released_ = false;
@@ -112,22 +113,25 @@ CommandResult ResultFor(const std::string& call_id) {
   return result;
 }
 
-TEST(LlmAgentAsyncTest, SubmittingDoesNotBlockAndResolvesOnce) {
+TEST(LlmAgentAsyncTest, StartingDoesNotBlockAndResolvesOnce) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  const StartOutcome started = agent.DecideAsync();
+  ASSERT_TRUE(started.ok());
+  EXPECT_EQ(started.context_revision, "rev-62");
 
   // The caller keeps running while the provider works.
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
   EXPECT_EQ(agent.InFlightDecisionCount(), 1u);
   EXPECT_TRUE(agent.IsBusy());
+  EXPECT_FALSE(agent.PollDecision().has_value());
   EXPECT_FALSE(agent.WaitForIdle(std::chrono::milliseconds(0)));
 
   provider->Release();
-  const DecisionResult decision = future.get();
+  const DecisionResult decision = test::WaitDecision(agent);
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess());
@@ -143,18 +147,17 @@ TEST(LlmAgentAsyncTest, OnlyOneDecisionRunsAtATime) {
   Agent agent(provider, DefaultConfig());
 
   agent.UpdateContext(Update("rev-62"));
-  std::future<DecisionResult> first = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
 
   // A second submission while the first is in flight is refused immediately.
   agent.UpdateContext(Update("rev-63"));
-  const DecisionResult busy = agent.DecideAsync().get();
-  EXPECT_EQ(busy.status, DecisionStatus::Busy);
-  EXPECT_EQ(busy.decision_id, 0u);
-  EXPECT_EQ(provider->calls, 1);
+  const StartOutcome busy = agent.DecideAsync();
+  EXPECT_EQ(busy.status, StartStatus::Busy);
+  EXPECT_EQ(provider->calls.load(), 1);
 
   provider->Release();
-  EXPECT_TRUE(first.get().completion.IsSuccess());
+  EXPECT_TRUE(test::WaitDecision(agent).completion.IsSuccess());
 }
 
 TEST(LlmAgentAsyncTest, CloseDuringFlightDiscardsTheResult) {
@@ -162,30 +165,31 @@ TEST(LlmAgentAsyncTest, CloseDuringFlightDiscardsTheResult) {
   Agent agent(provider, DefaultConfig());
 
   agent.UpdateContext(Update("rev-62"));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
 
   agent.Close();
   provider->Release();
 
-  const DecisionResult decision = future.get();  // always satisfied
+  const DecisionResult decision =
+      test::WaitDecision(agent);  // always satisfied
   EXPECT_EQ(decision.status, DecisionStatus::Closed);
   EXPECT_EQ(decision.decision_id, 0u);
   EXPECT_EQ(agent.PendingDecisionCount(), 0u);
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 0u);
 }
 
-TEST(LlmAgentAsyncTest, SubmittingAfterCloseResolvesImmediately) {
+TEST(LlmAgentAsyncTest, StartingAfterCloseIsRefusedImmediately) {
   auto provider = std::make_shared<GatedProvider>();
   Agent agent(provider, DefaultConfig());
 
   agent.UpdateContext(Update("rev-62"));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   agent.Close();
-  EXPECT_EQ(agent.DecideAsync().get().status, DecisionStatus::Closed);
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::Closed);
 
   provider->Release();
-  EXPECT_EQ(future.get().status, DecisionStatus::Closed);
+  EXPECT_EQ(test::WaitDecision(agent).status, DecisionStatus::Closed);
 }
 
 TEST(LlmAgentAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
@@ -197,14 +201,14 @@ TEST(LlmAgentAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
-  const DecisionResult first = agent.DecideAsync().get();
+  const DecisionResult first = test::DecideOrThrow(agent);
   ASSERT_TRUE(first.completion.IsSuccess());
   ASSERT_EQ(
       agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
 
   agent.UpdateContext(Update("rev-70"));
-  const DecisionResult second = agent.DecideAsync().get();
+  const DecisionResult second = test::DecideOrThrow(agent);
 
   ASSERT_TRUE(second.completion.IsSuccess());
   EXPECT_EQ(second.decision_id, 2u);
@@ -212,14 +216,14 @@ TEST(LlmAgentAsyncTest, AsynchronousDecisionsFeedTheNextRequest) {
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 1u);
 }
 
-TEST(LlmAgentAsyncTest, WorkerSurvivesRepeatedAgentLifetimes) {
+TEST(LlmAgentAsyncTest, AgentCanBeRecreatedRepeatedly) {
   for (int i = 0; i < 5; ++i) {
     auto provider = std::make_shared<GatedProvider>();
     provider->Release();
     Agent agent(provider, DefaultConfig());
     agent.UpdateContext(Update("rev-1"));
-    EXPECT_TRUE(agent.DecideAsync().get().completion.IsSuccess());
-    // The destructor joins the worker; no thread is left behind.
+    EXPECT_TRUE(test::DecideOrThrow(agent).completion.IsSuccess());
+    // The destructor waits out any in-flight request; no thread is left behind.
   }
   SUCCEED();
 }
@@ -228,7 +232,7 @@ TEST(LlmAgentAsyncTest, ThrowingProviderIsReportedNotThrown) {
   Agent agent(std::make_shared<ThrowingProvider>(), DefaultConfig());
 
   agent.UpdateContext(Update("rev-1"));
-  const DecisionResult decision = agent.DecideAsync().get();
+  const DecisionResult decision = test::DecideOrThrow(agent);
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
   EXPECT_EQ(decision.completion.status, CompletionStatus::ProviderError);
@@ -242,7 +246,7 @@ TEST(LlmAgentAsyncTest, ThrowingProviderLeavesTheAgentUsable) {
   // A provider that throws must not poison the agent: the next round works.
   class FlakyProvider final : public IModelProvider {
    public:
-    int calls = 0;
+    std::atomic<int> calls{0};
     std::string Name() const override { return "flaky"; }
     CompletionResult Complete(const ModelRequest&) override {
       if (++calls == 1) {
@@ -257,12 +261,12 @@ TEST(LlmAgentAsyncTest, ThrowingProviderLeavesTheAgentUsable) {
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-1"));
-  EXPECT_EQ(agent.DecideAsync().get().completion.status,
+  EXPECT_EQ(test::DecideOrThrow(agent).completion.status,
             CompletionStatus::ProviderError);
   EXPECT_FALSE(agent.IsBusy());
 
   agent.UpdateContext(Update("rev-2"));
-  const DecisionResult second = agent.DecideAsync().get();
+  const DecisionResult second = test::DecideOrThrow(agent);
   ASSERT_TRUE(second.completion.IsSuccess());
   EXPECT_EQ(second.decision_id, 1u);
 }
@@ -284,10 +288,10 @@ TEST(LlmAgentAsyncTest, TwoAgentsRunIndependentlyOnOneProvider) {
 
   // Both may be in flight at the same time: the "one at a time" rule is per
   // agent, not per provider.
-  std::future<DecisionResult> home_future = home.DecideAsync();
-  std::future<DecisionResult> away_future = away.DecideAsync();
-  const DecisionResult home_decision = home_future.get();
-  const DecisionResult away_decision = away_future.get();
+  ASSERT_TRUE(home.DecideAsync().ok());
+  ASSERT_TRUE(away.DecideAsync().ok());
+  const DecisionResult home_decision = test::WaitDecision(home);
+  const DecisionResult away_decision = test::WaitDecision(away);
 
   ASSERT_TRUE(home_decision.completion.IsSuccess());
   ASSERT_TRUE(away_decision.completion.IsSuccess());
@@ -295,7 +299,7 @@ TEST(LlmAgentAsyncTest, TwoAgentsRunIndependentlyOnOneProvider) {
   EXPECT_EQ(away_decision.context_revision, "rev-a");
   EXPECT_EQ(home_decision.decision_id, 1u);
   EXPECT_EQ(away_decision.decision_id, 1u);
-  EXPECT_EQ(provider->calls, 2);
+  EXPECT_EQ(provider->calls.load(), 2);
 }
 
 TEST(LlmAgentAsyncTest, DisablingTheLoggerCannotBreakADecision) {
@@ -317,7 +321,7 @@ TEST(LlmAgentAsyncTest, DisablingTheLoggerCannotBreakADecision) {
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
-  const DecisionResult decision = agent.DecideAsync().get();
+  const DecisionResult decision = test::DecideOrThrow(agent);
 
   ASSERT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess());

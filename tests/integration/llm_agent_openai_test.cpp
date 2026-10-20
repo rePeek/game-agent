@@ -2,6 +2,8 @@
 // a scripted transport. No network, no API key — but the full stack: the
 // request that would go on the wire is built and asserted at every round.
 
+#include "agent_driver.h"
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -126,7 +128,7 @@ struct Fixture {
   /// One decision round: update the context, then ask.
   DecisionResult Decide(const std::string& revision) {
     agent->UpdateContext(Update("Minute window.", revision));
-    return agent->DecideAsync().get();
+    return test::DecideOrThrow(*agent);
   }
 };
 
@@ -136,7 +138,8 @@ TEST(LlmAgentOpenAITest, AsyncDecisionRoundTripsThroughTheWire) {
 
   fixture.agent->UpdateContext(
       Update("Minute 62, 1-1, they press high.", "rev-62"));
-  const DecisionResult decision = fixture.agent->DecideAsync().get();
+  ASSERT_TRUE(fixture.agent->DecideAsync().ok());
+  const DecisionResult decision = test::WaitDecision(*fixture.agent);
 
   ASSERT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess())
@@ -182,7 +185,8 @@ TEST(LlmAgentOpenAITest, CommandResultsFeedTheNextRequest) {
   fixture.transport->responses.push_back(OneCallResponse());
   fixture.agent->UpdateContext(
       Update("Minute 70, they switched to a low block.", "rev-70"));
-  const DecisionResult second = fixture.agent->DecideAsync().get();
+  ASSERT_TRUE(fixture.agent->DecideAsync().ok());
+  const DecisionResult second = test::WaitDecision(*fixture.agent);
   ASSERT_TRUE(second.completion.IsSuccess())
       << second.completion.ErrorMessage();
 
@@ -218,7 +222,7 @@ TEST(LlmAgentOpenAITest, HistoryIsTrimmedWithoutSplittingDecisions) {
   for (const char* revision : {"rev-1", "rev-2", "rev-3"}) {
     fixture.transport->responses.push_back(TwoCallResponse());
     fixture.agent->UpdateContext(Update("Minute window.", revision));
-    const DecisionResult decision = fixture.agent->DecideAsync().get();
+    const DecisionResult decision = fixture.Decide(revision);
     ASSERT_TRUE(decision.completion.IsSuccess())
         << decision.completion.ErrorMessage();
     ASSERT_EQ(fixture.agent->RecordCommandResults(
@@ -268,7 +272,7 @@ TEST(LlmAgentOpenAITest, StaleDecisionsAreDiscardedNotRecorded) {
   EXPECT_NE(stale.context_revision, fixture.agent->current_revision());
   EXPECT_TRUE(fixture.agent->DiscardDecision(stale.decision_id));
 
-  const DecisionResult next = fixture.agent->DecideAsync().get();
+  const DecisionResult next = fixture.Decide("rev-75");
   ASSERT_TRUE(next.completion.IsSuccess());
 
   // The discarded decision left no trace in the transcript.
@@ -307,7 +311,7 @@ TEST(LlmAgentOpenAITest, ManyRoundsKeepIdAndRevisionBookkeepingStraight) {
     fixture.transport->responses.push_back(TwoCallResponse());
 
     fixture.agent->UpdateContext(Update("Minute window.", revision));
-    const DecisionResult decision = fixture.agent->DecideAsync().get();
+    const DecisionResult decision = fixture.Decide(revision);
     ASSERT_TRUE(decision.completion.IsSuccess())
         << decision.completion.ErrorMessage();
     EXPECT_EQ(decision.decision_id, expected_id++);

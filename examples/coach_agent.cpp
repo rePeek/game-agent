@@ -26,11 +26,13 @@
  *   export OPENAI_API_KEY=... && ./coach_agent
  */
 
+#include <chrono>
 #include <cstdlib>
-#include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -158,37 +160,48 @@ void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
   agent.UpdateContext(BuildContext(
       minute, revision,
       "decision at minute " + std::to_string(minute) + ", score 1-1"));
-  std::future<llm::DecisionResult> future = agent.DecideAsync();
-
-  // A game would keep ticking here. The example simply waits for the answer.
-  const llm::DecisionResult decision = future.get();
-
-  if (decision.status != llm::DecisionStatus::Completed) {
-    std::cout << "  no decision: " << llm::ToString(decision.completion.status)
-              << " (" << decision.completion.ErrorMessage() << ")\n\n";
+  const llm::StartOutcome started = agent.DecideAsync();
+  if (!started.ok()) {
+    std::cout << "  no decision started: " << started.error << "\n\n";
     return;
   }
-  if (!decision.completion.IsSuccess()) {
+
+  // A game would keep ticking here. The example polls until the model
+  // answers; PollDecision() never blocks.
+  std::optional<llm::DecisionResult> decision;
+  while (!decision.has_value()) {
+    decision = agent.PollDecision();
+    if (!decision.has_value()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  if (decision->status != llm::DecisionStatus::Completed) {
+    std::cout << "  no decision: " << llm::ToString(decision->completion.status)
+              << " (" << decision->completion.ErrorMessage() << ")\n\n";
+    return;
+  }
+  if (!decision->completion.IsSuccess()) {
     std::cout << "  rejected by the SDK: "
-              << llm::ToString(decision.completion.status) << " ("
-              << decision.completion.ErrorMessage() << ")\n\n";
+              << llm::ToString(decision->completion.status) << " ("
+              << decision->completion.ErrorMessage() << ")\n\n";
     return;
   }
 
   // The revision travelled with the decision, so a stale answer can be
   // recognised before anything is applied.
-  if (decision.context_revision != agent.current_revision()) {
-    std::cout << "  stale decision (" << decision.context_revision
+  if (decision->context_revision != agent.current_revision()) {
+    std::cout << "  stale decision (" << decision->context_revision
               << " != " << agent.current_revision() << "), discarded\n\n";
-    agent.DiscardDecision(decision.decision_id);
+    agent.DiscardDecision(decision->decision_id);
     return;
   }
 
   // Binding argues no side effects; the game decides when to run.
-  llm::PrepareResult prepared = agent.PrepareCommands(decision.decision_id);
+  llm::PrepareResult prepared = agent.PrepareCommands(decision->decision_id);
   if (!prepared.ok()) {
     std::cout << "  could not prepare commands: " << prepared.error << "\n\n";
-    agent.DiscardDecision(decision.decision_id);
+    agent.DiscardDecision(decision->decision_id);
     return;
   }
 
@@ -199,9 +212,9 @@ void RunWindow(llm::Agent& agent, int minute, const std::string& revision) {
   }
 
   switch (
-      agent.RecordCommandResults(decision.decision_id, std::move(results))) {
+      agent.RecordCommandResults(decision->decision_id, std::move(results))) {
     case llm::RecordOutcome::Recorded:
-      std::cout << "  decision " << decision.decision_id
+      std::cout << "  decision " << decision->decision_id
                 << " recorded; the next request sees it as history\n\n";
       break;
     case llm::RecordOutcome::IncompleteResults:

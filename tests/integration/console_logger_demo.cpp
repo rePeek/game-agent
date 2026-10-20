@@ -13,9 +13,11 @@
 
 #include "console_logger.h"
 
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -62,6 +64,19 @@ void RegisterPressing(llm::Agent& agent) {
       });
 }
 
+/// Starts a decision and polls until it is ready, the way a game tick would.
+llm::DecisionResult DecideNow(llm::Agent& agent) {
+  if (!agent.DecideAsync().ok()) {
+    return {};
+  }
+  for (;;) {
+    if (auto result = agent.PollDecision()) {
+      return *result;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
 llm::ContextUpdate Update(const std::string& revision) {
   llm::ContextUpdate update;
   update.current_context = "minute=62; opponent presses high on our left";
@@ -101,7 +116,7 @@ int main() {
 
   std::cout << "-- decision 1: a normal round\n";
   agent.UpdateContext(Update("rev-62"));
-  const llm::DecisionResult first = agent.DecideAsync().get();
+  const llm::DecisionResult first = DecideNow(agent);
   if (!first.completion.IsSuccess()) {
     std::cerr << "unexpected: " << first.completion.ErrorMessage() << "\n";
     return 1;
@@ -109,7 +124,7 @@ int main() {
 
   std::cout << "\n-- a second decision before recording the first: rejected\n";
   agent.UpdateContext(Update("rev-63"));
-  agent.DecideAsync().get();
+  (void)DecideNow(agent);
 
   std::cout << "\n-- preparing and executing the first decision\n";
   llm::PrepareResult prepared = agent.PrepareCommands(first.decision_id);
@@ -126,7 +141,7 @@ int main() {
 
   std::cout << "\n-- decision 2, then discarding it (stale revision)\n";
   agent.UpdateContext(Update("rev-70"));
-  const llm::DecisionResult second = agent.DecideAsync().get();
+  const llm::DecisionResult second = DecideNow(agent);
   if (second.decision_id != 0) {
     agent.DiscardDecision(second.decision_id);
   }

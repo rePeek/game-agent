@@ -1,6 +1,8 @@
 // Unit tests for llm::Agent: configuration, decisions, staging and isolation.
 // The provider is scripted, so nothing here needs a network.
 
+#include "agent_driver.h"
+
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -124,7 +126,7 @@ CommandResult ResultFor(const std::string& call_id,
 /// One decision round: update the context, then ask.
 DecisionResult Decide(Agent& agent, ContextUpdate update) {
   agent.UpdateContext(std::move(update));
-  return agent.DecideAsync().get();
+  return test::DecideOrThrow(agent);
 }
 
 AgentConfig DefaultConfig() {
@@ -143,8 +145,8 @@ TEST(LlmAgentTest, DecisionIsAsynchronousAndStaged) {
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62"));
-  std::future<DecisionResult> future = agent.DecideAsync();
-  const DecisionResult decision = future.get();
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult decision = test::WaitDecision(agent);
 
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
   ASSERT_TRUE(decision.completion.IsSuccess())
@@ -220,9 +222,9 @@ TEST(LlmAgentTest, OneDecisionAtATime) {
   const DecisionResult first = Decide(agent, Update("rev-62"));
   ASSERT_TRUE(first.completion.IsSuccess());
 
-  const DecisionResult busy = Decide(agent, Update("rev-63"));
-  EXPECT_EQ(busy.status, DecisionStatus::Busy);
-  EXPECT_EQ(busy.decision_id, 0u);
+  agent.UpdateContext(Update("rev-63"));
+  const StartOutcome busy = agent.DecideAsync();
+  EXPECT_EQ(busy.status, StartStatus::Busy);
   EXPECT_EQ(provider->requests.size(), 1u)
       << "a refused decision must not reach the provider";
 
@@ -326,8 +328,8 @@ TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   agent.Close();
   EXPECT_TRUE(agent.IsClosed());
 
-  const DecisionResult refused = Decide(agent, Update("rev-63"));
-  EXPECT_EQ(refused.status, DecisionStatus::Closed);
+  agent.UpdateContext(Update("rev-63"));
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::Closed);
   EXPECT_EQ(provider->requests.size(), 1u);
   EXPECT_EQ(
       agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
@@ -335,12 +337,13 @@ TEST(LlmAgentTest, CloseRefusesFurtherDecisions) {
   EXPECT_EQ(agent.ContextSnapshot().decision_count(), 0u);
 }
 
-TEST(LlmAgentTest, WaitForIdleReportsWhenTheWorkerIsDone) {
+TEST(LlmAgentTest, WaitForIdleReportsWhenTheModelCallIsDone) {
   auto provider = std::make_shared<ScriptedProvider>();
   Agent agent(provider, DefaultConfig());
 
   EXPECT_TRUE(agent.WaitForIdle(std::chrono::milliseconds(0)));
-  const DecisionResult decision = Decide(agent, Update("rev-62"));
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult decision = test::WaitDecision(agent);
   EXPECT_EQ(agent.InFlightDecisionCount(), 0u);
   EXPECT_TRUE(agent.WaitForIdle(std::chrono::milliseconds(0)));
   EXPECT_EQ(decision.status, DecisionStatus::Completed);
@@ -352,7 +355,7 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   RegisterPressing(agent);
 
   agent.UpdateContext(Update("rev-62", "Minute 62."));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
 
   // The game keeps updating the world while the model is thinking. That is
@@ -362,7 +365,7 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   EXPECT_TRUE(agent.IsBusy());
 
   provider->Release();
-  const DecisionResult first = future.get();
+  const DecisionResult first = test::WaitDecision(agent);
   ASSERT_TRUE(first.completion.IsSuccess());
   EXPECT_EQ(first.context_revision, "rev-62")
       << "the decision reports the snapshot it was taken from";
@@ -371,7 +374,8 @@ TEST(LlmAgentTest, ContextUpdatesDuringFlightApplyToTheNextDecision) {
   ASSERT_EQ(
       agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
       RecordOutcome::Recorded);
-  const DecisionResult second = agent.DecideAsync().get();
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult second = test::WaitDecision(agent);
   ASSERT_TRUE(second.completion.IsSuccess());
   EXPECT_EQ(second.context_revision, "rev-70");
 
@@ -391,12 +395,13 @@ TEST(LlmAgentTest, ARefusedDecisionStillUsesTheLatestUpdate) {
 
   // Refused as Busy: the update is recorded either way, because UpdateContext
   // is about the world state, not about the request.
-  const DecisionResult busy = Decide(agent, Update("rev-63", "Minute 63."));
-  EXPECT_EQ(busy.status, DecisionStatus::Busy);
+  agent.UpdateContext(Update("rev-63", "Minute 63."));
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::Busy);
   EXPECT_EQ(agent.current_revision(), "rev-63");
 
   ASSERT_EQ(agent.DiscardDecision(first.decision_id), true);
-  const DecisionResult after = agent.DecideAsync().get();
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult after = test::WaitDecision(agent);
   ASSERT_TRUE(after.completion.IsSuccess());
   EXPECT_EQ(after.context_revision, "rev-63")
       << "a refused decision does not swallow the update";
@@ -501,8 +506,8 @@ TEST(LlmAgentTest, ContextTooLargeIsRefusedBeforeSendingAnything) {
       "A very long match description that cannot possibly fit eight tokens.";
   agent.UpdateContext(std::move(update));
 
-  const DecisionResult decision = agent.DecideAsync().get();
-  EXPECT_EQ(decision.status, DecisionStatus::ContextTooLarge);
+  const StartOutcome started = agent.DecideAsync();
+  EXPECT_EQ(started.status, StartStatus::ContextTooLarge);
   EXPECT_TRUE(provider->requests.empty())
       << "an over-budget request is never sent";
   EXPECT_FALSE(agent.IsBusy());
@@ -517,7 +522,8 @@ TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
   ContextUpdate update = Update("rev-62");
   update.decision_context = "Minute 62, 1-1, they press high.";
   agent.UpdateContext(std::move(update));
-  const DecisionResult first = agent.DecideAsync().get();
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult first = test::WaitDecision(agent);
   ASSERT_TRUE(first.completion.IsSuccess());
   EXPECT_EQ(
       agent.RecordCommandResults(first.decision_id, {ResultFor("call_a")}),
@@ -530,7 +536,8 @@ TEST(LlmAgentTest, DecisionContextTravelsFromDecideToHistory) {
 
   // The next request shows the framing that decision answered.
   agent.UpdateContext(Update("rev-70"));
-  const DecisionResult second = agent.DecideAsync().get();
+  ASSERT_TRUE(agent.DecideAsync().ok());
+  const DecisionResult second = test::WaitDecision(agent);
   ASSERT_TRUE(second.completion.IsSuccess());
   ASSERT_GE(provider->requests.size(), 2u);
   const std::vector<Message>& messages = provider->requests[1].messages;

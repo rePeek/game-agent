@@ -1,6 +1,8 @@
 // Agent command-registration and configuration tests. The provider is scripted,
 // so nothing here needs a network.
 
+#include "agent_driver.h"
+
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -84,13 +86,13 @@ TEST(LlmAgentCommandsTest, NotConfiguredIsDistinctFromClosed) {
   Agent agent(Config());
 
   // No provider yet: the refusal names configuration, not closure.
-  const DecisionResult undecided = agent.DecideAsync().get();
-  EXPECT_EQ(undecided.status, DecisionStatus::NotConfigured);
+  const StartOutcome undecided = agent.DecideAsync();
+  EXPECT_EQ(undecided.status, StartStatus::NotConfigured);
   EXPECT_FALSE(agent.IsClosed());
 
   ASSERT_TRUE(agent.SetProvider(std::make_shared<StubProvider>()).ok());
   agent.UpdateContext(Update("rev-1"));
-  EXPECT_EQ(agent.DecideAsync().get().status, DecisionStatus::Completed);
+  EXPECT_TRUE(test::DecideOrThrow(agent).completion.IsSuccess());
 }
 
 TEST(LlmAgentCommandsTest, RejectsNullProviderAndEmptyModel) {
@@ -134,7 +136,7 @@ TEST(LlmAgentCommandsTest, CommandSetIsFrozenWhileADecisionIsOutstanding) {
   ASSERT_TRUE(agent.RegisterCommand("keep", "", Params(), []() {}).ok());
 
   agent.UpdateContext(Update("rev-1"));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
 
   // In flight: registering, removing and clearing are all refused.
@@ -145,7 +147,7 @@ TEST(LlmAgentCommandsTest, CommandSetIsFrozenWhileADecisionIsOutstanding) {
   EXPECT_EQ(agent.ClearCommands().status, RegistrationStatus::AgentBusy);
 
   provider->Release();
-  const DecisionResult decision = future.get();
+  const DecisionResult decision = test::WaitDecision(agent);
   ASSERT_TRUE(decision.completion.IsSuccess());
 
   // Awaiting results is Busy too.
@@ -167,7 +169,7 @@ TEST(LlmAgentCommandsTest, ClosedAgentsRefuseConfigurationAndRegistration) {
   EXPECT_EQ(agent.UnregisterCommand("a").status,
             RegistrationStatus::AgentClosed);
   EXPECT_EQ(agent.ClearCommands().status, RegistrationStatus::AgentClosed);
-  EXPECT_EQ(agent.DecideAsync().get().status, DecisionStatus::Closed);
+  EXPECT_EQ(agent.DecideAsync().status, StartStatus::Closed);
 }
 
 TEST(LlmAgentCommandsTest, ProviderCannotChangeWhileADecisionIsOutstanding) {
@@ -175,14 +177,14 @@ TEST(LlmAgentCommandsTest, ProviderCannotChangeWhileADecisionIsOutstanding) {
   Agent agent(provider, Config());
 
   agent.UpdateContext(Update("rev-1"));
-  std::future<DecisionResult> future = agent.DecideAsync();
+  ASSERT_TRUE(agent.DecideAsync().ok());
   ASSERT_TRUE(provider->WaitUntilEntered(std::chrono::seconds(5)));
   EXPECT_EQ(agent.SetProvider(std::make_shared<StubProvider>()).status,
             ConfigStatus::AgentBusy)
       << "in flight";
 
   provider->Release();
-  const DecisionResult decision = future.get();
+  const DecisionResult decision = test::WaitDecision(agent);
   ASSERT_TRUE(decision.completion.IsSuccess());
   EXPECT_EQ(agent.SetProvider(std::make_shared<StubProvider>()).status,
             ConfigStatus::AgentBusy)

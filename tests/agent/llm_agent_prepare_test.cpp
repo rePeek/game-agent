@@ -2,6 +2,8 @@
 // lifecycle invalidation. The provider is scripted, so nothing here needs a
 // network.
 
+#include "agent_driver.h"
+
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -80,7 +82,7 @@ void RegisterFormation(Agent& agent, Counters& counters) {
 
 DecisionResult Decide(Agent& agent, const std::string& revision) {
   agent.UpdateContext(Update(revision));
-  return agent.DecideAsync().get();
+  return test::DecideOrThrow(agent);
 }
 
 TEST(LlmAgentPrepareTest, BindsEveryCallWithoutRunningIt) {
