@@ -33,7 +33,9 @@
               ccache
 
               # clang-format, clang-tidy and clangd are tools, not the compiler.
-              clang-tools
+              # Pinned to the same major as the CI runner (Ubuntu's clang-format
+              # 18), so formatting is deterministic across both.
+              llvmPackages_18.clang-tools
 
               # Resolved through find_package(OpenSSL).
               openssl

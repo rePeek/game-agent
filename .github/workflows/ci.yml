@@ -26,6 +26,7 @@ jobs:
       with:
         submodules: recursive
 
+    # clang-format from Ubuntu 24.04 is 18.x, the major the Nix flake pins.
     - name: Install build tools
       run: |
         sudo apt-get update
